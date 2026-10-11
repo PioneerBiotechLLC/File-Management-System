@@ -1,0 +1,240 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  admin
+  editor
+  viewer
+}
+
+enum FileStatus {
+  uploading
+  processing
+  ready
+  needs_review
+  failed
+}
+
+enum FileReadStatus {
+  full
+  partial
+  not_read
+}
+
+enum FolderAccess {
+  everyone
+  restricted
+}
+
+enum FileSource {
+  upload
+  email_attachment
+}
+
+enum AiPurpose {
+  file_analysis
+  file_search
+}
+
+model Organization {
+  id           String   @id @default(cuid())
+  name         String
+  slug         String   @unique
+  domain       String   @unique
+  timezone     String   @default("Asia/Dubai")
+  logoUrl      String?
+  primaryColor String?
+  createdAt    DateTime @default(now())
+
+  memberships Membership[]
+  folders     Folder[]
+  files       StoredFile[]
+  auditLogs   AuditLog[]
+  aiUsage     AiUsage[]
+}
+
+model AppUser {
+  id          String    @id @default(cuid())
+  /// Always lowercase; the identity shared with the sibling apps.
+  email       String    @unique
+  name        String?
+  isOwner     Boolean   @default(false)
+  isActive    Boolean   @default(true)
+  lastLoginAt DateTime?
+
+  memberships Membership[]
+  grants      FolderGrant[]
+  uploads     StoredFile[]
+}
+
+model Membership {
+  id     String @id @default(cuid())
+  userId String
+  orgId  String
+  role   Role
+
+  user AppUser      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, orgId])
+  @@index([orgId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  /// Null for actions that are not tied to one company, such as making someone an owner.
+  orgId      String?
+  userEmail  String
+  action     String
+  targetType String
+  targetId   String
+  before     Json?
+  after      Json?
+  createdAt  DateTime @default(now())
+
+  org Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt])
+}
+
+model AiUsage {
+  id               String    @id @default(cuid())
+  orgId            String
+  userId           String?
+  fileId           String?
+  purpose          AiPurpose
+  model            String
+  inputTokens      Int       @default(0)
+  outputTokens     Int       @default(0)
+  cacheReadTokens  Int       @default(0)
+  cacheWriteTokens Int       @default(0)
+  costUsd          Float     @default(0)
+  error            String?
+  createdAt        DateTime  @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt])
+  @@index([orgId, userId, purpose, createdAt])
+}
+
+model Folder {
+  id          String       @id @default(cuid())
+  orgId       String
+  /// Null for a top-level folder.
+  parentId    String?
+  name        String
+  nameAr      String?
+  /// What belongs here, in plain words. Claude files by this, so it matters more than the name.
+  description String?
+  access      FolderAccess @default(everyone)
+  sortOrder   Int          @default(0)
+  /// Never hard-delete a folder that held files.
+  isActive    Boolean      @default(true)
+  createdBy   String
+  createdAt   DateTime     @default(now())
+
+  org            Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  parent         Folder?       @relation("FolderTree", fields: [parentId], references: [id], onDelete: NoAction)
+  children       Folder[]      @relation("FolderTree")
+  grants         FolderGrant[]
+  files          StoredFile[]  @relation("FileFolder")
+  suggestedFiles StoredFile[]  @relation("FileSuggestedFolder")
+
+  /// The migration creates this index with NULLS NOT DISTINCT so two top-level folders cannot share a name.
+  @@unique([orgId, parentId, name])
+  @@index([orgId, parentId])
+}
+
+/// Who may see a restricted folder and everything under it. Admins and owners always can.
+model FolderGrant {
+  id       String  @id @default(cuid())
+  folderId String
+  userId   String
+  canWrite Boolean @default(false)
+
+  folder Folder  @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  user   AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([folderId, userId])
+  @@index([userId])
+}
+
+model StoredFile {
+  id                  String          @id @default(cuid())
+  orgId               String
+  /// Null while unfiled.
+  folderId            String?
+  /// Display name, editable.
+  name                String
+  originalName        String
+  mimeType            String
+  sizeBytes           Int
+  /// Duplicate detection within the company.
+  sha256              String
+  currentVersion      Int             @default(1)
+  status              FileStatus      @default(uploading)
+  readStatus          FileReadStatus?
+  source              FileSource      @default(upload)
+  sourceRef           String?
+  title               String?
+  /// 2–4 sentences in the file's language, plus one English line when it is Arabic.
+  summary             String?
+  /// quotation | purchase_order | invoice | coa | contract | certificate | report | letter | specification | price_list | other
+  docType             String?
+  docDate             DateTime?
+  /// en | ar | mixed | other
+  language            String?
+  /// { parties:[], references:[{kind,value}], amounts:[{value,currency}], products:[], expiryDate? }
+  facts               Json            @default("{}")
+  tags                String[]        @default([])
+  suggestedFolderId   String?
+  filingConfidence    Float?
+  /// One short sentence shown to the user.
+  filingReason        String?
+  /// "ai" or a user email.
+  filedBy             String?
+  aiModel             String?
+  aiError             String?
+  attempts            Int             @default(0)
+  processingStartedAt DateTime?
+  /// Capped; AES-256-GCM encrypted when DATA_ENCRYPTION_KEY is set.
+  extractedText       String?
+  searchVector        Unsupported("tsvector")?
+  uploadedBy          String
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  /// Soft delete; purged from storage after 30 days.
+  deletedAt           DateTime?
+
+  org             Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  folder          Folder?       @relation("FileFolder", fields: [folderId], references: [id], onDelete: SetNull)
+  suggestedFolder Folder?       @relation("FileSuggestedFolder", fields: [suggestedFolderId], references: [id], onDelete: SetNull)
+  uploader        AppUser       @relation(fields: [uploadedBy], references: [id])
+  versions        FileVersion[]
+
+  @@index([orgId, folderId, deletedAt])
+  @@index([orgId, status])
+  @@index([orgId, sha256])
+  @@index([searchVector], type: Gin)
+}
+
+model FileVersion {
+  id         String   @id @default(cuid())
+  fileId     String
+  versionNo  Int
+  sizeBytes  Int
+  sha256     String
+  uploadedBy String
+  createdAt  DateTime @default(now())
+
+  file StoredFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@unique([fileId, versionNo])
+}
