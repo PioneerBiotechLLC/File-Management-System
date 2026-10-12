@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { fileKindsFor } from "@/lib/file-kinds";
 import { fileContext, listUnfiled } from "@/lib/files";
-import { READ_TIMEOUT_MS, summaryToForm } from "@/lib/intake";
+import { MAX_READ_ATTEMPTS, READ_TIMEOUT_MS, summaryToForm } from "@/lib/intake";
 import { can } from "@/lib/permissions";
 import { companyContext } from "@/lib/session";
 import { ReadingWatch } from "./reading-watch";
@@ -40,7 +40,7 @@ export default async function ReviewPage({ params, searchParams }: { params: Pro
       step,
       readByAi,
       aiNote: f.status === "processing" && !reading ? "The AI did not finish reading this file." : (f.aiError ?? null),
-      retryable: !readByAi && (f.status === "processing" || f.readStatus === null),
+      retryable: !readByAi && f.attempts < MAX_READ_ATTEMPTS && (f.status === "processing" || (f.readStatus === null && f.aiError !== null)),
       form: summaryToForm(f),
       suggestion:
         f.suggestedFolderId && ctx.writable.has(f.suggestedFolderId)

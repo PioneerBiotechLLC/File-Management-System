@@ -21,6 +21,11 @@ const PDF_MAX_BYTES = 22 * 1024 * 1024;
 const IMAGE_MAX_BYTES = 7 * 1024 * 1024;
 /** Office files are zip archives; unpacking a large one can exhaust a serverless function's memory. */
 const OFFICE_MAX_BYTES = 20 * 1024 * 1024;
+/** What an Office file may unpack to. A real 20 MB document unpacks to a few times that; a zip bomb to gigabytes. */
+const OFFICE_MAX_INFLATED_BYTES = 200 * 1024 * 1024;
+const OFFICE_MAX_ENTRIES = 10_000;
+/** Opening a document that takes longer than this is given up, well inside the route's own limit. */
+const OFFICE_PARSE_TIMEOUT_MS = 30_000;
 /** Text sent to Claude (~25k–50k tokens). Longer files are read from the start and marked partial. */
 const AI_TEXT_MAX_CHARS = 100_000;
 const SHEET_MAX_ROWS = 200;
@@ -71,6 +76,55 @@ function isPdf(bytes: Uint8Array): boolean {
 }
 
 const isZip = (bytes: Uint8Array) => startsWith(bytes, [0x50, 0x4b, 0x03, 0x04]);
+
+/**
+ * What a zip archive would unpack to, read from its central directory without inflating anything.
+ * Null when the directory cannot be read (damaged, or zip64, which Office does not write at these sizes).
+ */
+export function zipInflatedSize(bytes: Uint8Array): { total: number; entries: number } | null {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  // The end-of-central-directory record sits in the last 64 KB, after a comment of up to 65,535 bytes.
+  const earliest = Math.max(0, bytes.length - 65_557);
+  let end = -1;
+  for (let i = bytes.length - 22; i >= earliest; i--) {
+    if (view.getUint32(i, true) === 0x06054b50) {
+      end = i;
+      break;
+    }
+  }
+  if (end < 0) return null;
+  const entries = view.getUint16(end + 10, true);
+  let position = view.getUint32(end + 16, true);
+  if (entries === 0xffff || position === 0xffffffff) return null;
+  let total = 0;
+  for (let n = 0; n < entries; n++) {
+    if (position + 46 > bytes.length || view.getUint32(position, true) !== 0x02014b50) return null;
+    const uncompressed = view.getUint32(position + 24, true);
+    if (uncompressed === 0xffffffff) return null;
+    total += uncompressed;
+    position += 46 + view.getUint16(position + 28, true) + view.getUint16(position + 30, true) + view.getUint16(position + 32, true);
+  }
+  return { total, entries };
+}
+
+/** Refuses an Office file that would unpack to too much, before any of it is inflated. */
+function officeTooBig(bytes: Uint8Array, what: string): Extraction | null {
+  if (bytes.length > OFFICE_MAX_BYTES) return unreadable(`${what} is larger than ${mb(OFFICE_MAX_BYTES)}`);
+  const inflated = zipInflatedSize(bytes);
+  if (!inflated) return unreadable(`${what} could not be opened (damaged)`);
+  if (inflated.total > OFFICE_MAX_INFLATED_BYTES || inflated.entries > OFFICE_MAX_ENTRIES) {
+    return unreadable(`${what} unpacks to more than ${mb(OFFICE_MAX_INFLATED_BYTES)}, too much to read`);
+  }
+  return null;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("timeout")), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 /**
  * Decides how to read a file from its bytes first, because names and browser-reported types are
@@ -181,9 +235,10 @@ export async function extract(bytes: Uint8Array, name: string, mimeType: string)
         blocks: [{ type: "image", source: { type: "base64", media_type: kind.mediaType, data: data() } }],
       };
     case "word": {
-      if (bytes.length > OFFICE_MAX_BYTES) return unreadable(`Word file is larger than ${mb(OFFICE_MAX_BYTES)}`);
+      const tooBig = officeTooBig(bytes, "Word file");
+      if (tooBig) return tooBig;
       try {
-        const { value } = await mammoth.extractRawText({ buffer: Buffer.from(bytes) });
+        const { value } = await withTimeout(mammoth.extractRawText({ buffer: Buffer.from(bytes) }), OFFICE_PARSE_TIMEOUT_MS);
         if (!value.trim()) return unreadable("Word file has no text");
         return { kind: "text", ...capText(value) };
       } catch {
@@ -191,9 +246,10 @@ export async function extract(bytes: Uint8Array, name: string, mimeType: string)
       }
     }
     case "spreadsheet": {
-      if (bytes.length > OFFICE_MAX_BYTES) return unreadable(`Spreadsheet is larger than ${mb(OFFICE_MAX_BYTES)}`);
+      const tooBig = officeTooBig(bytes, "Spreadsheet");
+      if (tooBig) return tooBig;
       try {
-        const { text, truncated } = await spreadsheetText(bytes);
+        const { text, truncated } = await withTimeout(spreadsheetText(bytes), OFFICE_PARSE_TIMEOUT_MS);
         if (!text.replace(/## Sheet: .*\n?/g, "").trim()) return unreadable("Spreadsheet has no data");
         const capped = capText(text);
         return { kind: "text", text: capped.text, readStatus: truncated ? "partial" : capped.readStatus };

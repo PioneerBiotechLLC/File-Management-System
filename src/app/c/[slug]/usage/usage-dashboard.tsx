@@ -128,7 +128,8 @@ export function UsageDashboard({ slug, report }: { slug: string; report: UsageRe
         <CardHeader>
           <CardTitle>People</CardTitle>
           <CardDescription>
-            Each person&apos;s own limits. The default is {usd(report.defaults.member.dailyUsd)} a day and {usd(report.defaults.member.monthlyUsd)} a month.
+            Each person&apos;s own limits. The default is {usd(report.defaults.member.dailyUsd)} a day and {usd(report.defaults.member.monthlyUsd)} a month; no limit here
+            can go above {usd(report.ceilings.dailyUsd)} a day or {usd(report.ceilings.monthlyUsd)} a month.
           </CardDescription>
         </CardHeader>
         <CardContent>

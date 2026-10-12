@@ -70,10 +70,16 @@ model AppUser {
   isOwner     Boolean   @default(false)
   isActive    Boolean   @default(true)
   lastLoginAt DateTime?
+  /// The Microsoft account that first signed in as this user: its tenant and object ids. Later
+  /// sign-ins must come from the same account, so a matching email from elsewhere is refused.
+  entraTid    String?
+  entraOid    String?
 
   memberships Membership[]
   grants      FolderGrant[]
   uploads     StoredFile[]
+
+  @@unique([entraTid, entraOid])
 }
 
 model Membership {
@@ -120,9 +126,12 @@ model AiUsage {
   outputTokens     Int       @default(0)
   cacheReadTokens  Int       @default(0)
   cacheWriteTokens Int       @default(0)
+  /// An estimate is set aside here while the call runs, then replaced by the real cost.
   costUsd          Float     @default(0)
   error            String?
   createdAt        DateTime  @default(now())
+  /// Null while the call is in flight.
+  finishedAt       DateTime?
 
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
@@ -215,8 +224,6 @@ model StoredFile {
   /// When and by whom the summary was checked and confirmed; a file is filed only after this.
   summaryConfirmedAt  DateTime?
   summaryConfirmedBy  String?
-  /// Reserved for search; nothing from the file's contents is stored here.
-  extractedText       String?
   searchVector        Unsupported("tsvector")?
   uploadedBy          String
   createdAt           DateTime        @default(now())

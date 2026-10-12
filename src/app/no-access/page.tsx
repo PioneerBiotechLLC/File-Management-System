@@ -22,6 +22,18 @@ const REASONS: Record<string, { title: string; body: React.ReactNode }> = {
     title: "No email on your account",
     body: "Microsoft did not share an email address for your account, so Files cannot tell who you are. Ask IT to check your account.",
   },
+  tenant: {
+    title: "Wrong Microsoft organisation",
+    body: "Your Microsoft account belongs to an organisation that does not use Files. Sign in with your work account.",
+  },
+  no_tenant: {
+    title: "Account not recognised",
+    body: "Microsoft did not say which organisation your account belongs to, so Files cannot let you in. Ask IT to check your account.",
+  },
+  account_mismatch: {
+    title: "A different account uses this email",
+    body: "Your email is on the list, but it was first used from another Microsoft account. If you have a new account, ask an owner to re-link you.",
+  },
   error: {
     title: "Something went wrong on our side",
     body: (

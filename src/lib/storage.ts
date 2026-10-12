@@ -1,4 +1,5 @@
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
@@ -15,9 +16,13 @@ import { storageEnv } from "@/lib/env";
  * File bytes live in a private S3-compatible bucket (Cloudflare R2 by default).
  * Browsers upload and download directly with short-lived presigned URLs, so bytes
  * never pass through a Vercel function.
+ *
+ * An upload goes to a staging key; confirming copies it to the final key. The upload URL stays
+ * valid for a while after that, so anything PUT to it later lands in the staging key, which is
+ * swept, never in the file people download or the AI reads.
  */
 
-const UPLOAD_URL_SECONDS = 15 * 60;
+export const UPLOAD_URL_SECONDS = 15 * 60;
 const DOWNLOAD_URL_SECONDS = 5 * 60;
 
 let client: { s3: S3Client; bucket: string } | null = null;
@@ -52,6 +57,11 @@ export function objectKey(orgId: string, fileId: string, versionNo: number): str
   if (!ID.test(orgId) || !ID.test(fileId)) throw new Error("Invalid id in object key");
   if (!Number.isInteger(versionNo) || versionNo < 1) throw new Error("Invalid version number");
   return `${orgId}/${fileId}/${versionNo}`;
+}
+
+/** Where the browser uploads a version to, before it is confirmed and copied to its object key. */
+export function uploadKey(orgId: string, fileId: string, versionNo: number): string {
+  return `${objectKey(orgId, fileId, versionNo)}.upload`;
 }
 
 /** RFC 5987 encoding, so Arabic and other non-ASCII names survive the download. */
@@ -95,6 +105,20 @@ export async function head(key: string): Promise<{ sizeBytes: number; contentTyp
     if (error instanceof NotFound) return null;
     throw error;
   }
+}
+
+/** Copies an object within the bucket, setting the type the file was declared with. */
+export async function copy(fromKey: string, toKey: string, contentType: string): Promise<void> {
+  const { s3, bucket: Bucket } = bucket();
+  await s3.send(
+    new CopyObjectCommand({
+      Bucket,
+      Key: toKey,
+      CopySource: `${Bucket}/${fromKey}`,
+      MetadataDirective: "REPLACE",
+      ContentType: contentType,
+    }),
+  );
 }
 
 /** The bytes of a stored object, or null when it does not exist. Used only to read a file with the AI. */

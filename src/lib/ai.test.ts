@@ -14,8 +14,8 @@ describe("costUsd", () => {
     expect(costUsd("claude-haiku-5-5", tokens(90_000, 1_000, 20_000))).toBeCloseTo(0.045 + 0.0025 + 0.001, 10);
   });
 
-  it("returns null for an unknown model instead of guessing", () => {
-    expect(costUsd("claude-unknown", tokens(1, 1))).toBeNull();
+  it("charges an unknown model at the dearest known rate rather than nothing", () => {
+    expect(costUsd("claude-unknown", tokens(1_000, 100))).toBeCloseTo((1_000 * 4 + 100 * 20) / 1e6, 12);
   });
 });
 
@@ -38,8 +38,14 @@ const baseUsage = {
 describe("usageOf", () => {
   it("reads top-level usage when there are no iterations", () => {
     const u = usageOf({ model: "claude-sonnet-5-5", usage: baseUsage }, "claude-sonnet-5-5");
-    expect(u).toMatchObject({ input: 1_000, output: 500, cacheRead: 200, cacheWrite: 100 });
+    expect(u).toMatchObject({ input: 1_000, output: 500, cacheRead: 200, cacheWrite: 100, unpriced: [] });
     expect(u.costUsd).toBeCloseTo((1_000 * 2 + 500 * 10 + 200 * 0.1 + 100 * 2.5) / 1e6, 12);
+  });
+
+  it("names a model it had to price at the fallback rate", () => {
+    const u = usageOf({ model: "claude-mystery", usage: baseUsage }, "claude-sonnet-5-5");
+    expect(u.unpriced).toEqual(["claude-mystery"]);
+    expect(u.costUsd).toBeCloseTo((1_000 * 4 + 500 * 20 + 200 * 0.2 + 100 * 5) / 1e6, 12);
   });
 
   it("prices each model in a fallback chain separately", () => {

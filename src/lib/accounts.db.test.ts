@@ -82,7 +82,8 @@ describe.skipIf(!TEST_DATABASE_URL)("companies, users and folder access (databas
     it("keeps deactivated users out unless an owner reactivates them", async () => {
       await addMember(prisma, { orgId, email: "gone@api-pharma.net", role: "viewer", actor });
       await deactivateUser(prisma, { email: "gone@api-pharma.net", actor });
-      await expect(addMember(prisma, { orgId, email: "gone@api-pharma.net", role: "viewer", actor })).rejects.toThrow(/deactivated/);
+      // Without saying "deactivated": an admin of another company must not learn that.
+      await expect(addMember(prisma, { orgId, email: "gone@api-pharma.net", role: "viewer", actor })).rejects.toThrow(/cannot be added from here/);
       const back = await addMember(prisma, { orgId, email: "gone@api-pharma.net", role: "viewer", actor, reactivate: true });
       expect(back.reactivated).toBe(true);
       expect((await prisma.appUser.findUniqueOrThrow({ where: { email: "gone@api-pharma.net" } })).isActive).toBe(true);
@@ -104,6 +105,10 @@ describe.skipIf(!TEST_DATABASE_URL)("companies, users and folder access (databas
       expect((await companyAccess(prisma, "api-pharma", sara))?.role).toBe("admin");
       expect(await companyAccess(prisma, "beta-co", sara)).toBeNull();
       expect(await companyAccess(prisma, "missing", owner)).toBeNull();
+      // Deactivation closes every company at once, not after the session's next reload.
+      await prisma.appUser.update({ where: { id: sara.id }, data: { isActive: false } });
+      expect(await companyAccess(prisma, "api-pharma", sara)).toBeNull();
+      await prisma.appUser.update({ where: { id: sara.id }, data: { isActive: true } });
       expect((await companiesForUser(prisma, owner)).map((c) => c.slug)).toEqual(["api-pharma", "beta-co"]);
       expect((await companiesForUser(prisma, sara)).map((c) => c.slug)).toEqual(["api-pharma"]);
     });

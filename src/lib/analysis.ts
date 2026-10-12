@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { AiLimitError, anthropic, callClaude, type AiCallContext } from "@/lib/ai";
+import { checkBudget, type LimitReason } from "@/lib/ai-limits";
 import { DOC_TYPES } from "@/lib/doc-types";
 import type { Db } from "@/lib/db";
 import type { Extraction } from "@/lib/extract";
@@ -242,7 +243,7 @@ export type AnalysisOutcome =
   | { status: "analyzed"; analysis: Analysis; readStatus: "full" | "partial"; model: string }
   /** The AI did not read it; the uploader writes the summary. */
   | { status: "not_read"; reason: string }
-  | { status: "limit_reached"; reason: string };
+  | { status: "limit_reached"; reason: string; limit: LimitReason };
 
 export class AnalysisError extends Error {
   constructor(message: string) {
@@ -268,6 +269,9 @@ export async function analyzeFile(
 
   try {
     if (extraction.kind === "blocks" && extraction.blocks[0].type === "document") {
+      // Counting is free, but it still sends the whole document; not for someone already at a cap.
+      const budget = await checkBudget(prisma, ctx);
+      if (!budget.ok) return { status: "limit_reached", reason: budget.message, limit: budget.reason };
       const { input_tokens } = await anthropic().beta.messages.countTokens({
         model: params.model,
         system: params.system,
@@ -297,7 +301,7 @@ export async function analyzeFile(
     }
     return { status: "analyzed", analysis, readStatus: extraction.readStatus, model: message.model };
   } catch (error) {
-    if (error instanceof AiLimitError) return { status: "limit_reached", reason: error.message };
+    if (error instanceof AiLimitError) return { status: "limit_reached", reason: error.message, limit: error.reason };
     // A 400 or 413 on a PDF or image means Claude cannot take that file (encrypted, damaged, too many
     // pages). Converted text cannot cause one, so there it points at the request and is rethrown.
     const rejected = error instanceof Anthropic.BadRequestError || (error instanceof Anthropic.APIError && error.status === 413);

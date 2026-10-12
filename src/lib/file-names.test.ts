@@ -29,10 +29,15 @@ describe("cleanFileName", () => {
 });
 
 describe("isBlockedFile", () => {
-  it("blocks executables and scripts by extension, any case", () => {
-    for (const name of ["setup.EXE", "run.sh", "x.ps1", "macro.js", "a.bat", "tool.py"]) {
+  it("blocks executables and scripts by extension, any case, including bare and trailing-dot names", () => {
+    for (const name of ["setup.EXE", "run.sh", "x.ps1", "macro.js", "a.bat", "tool.py", ".exe", "setup.exe.", "setup.exe "]) {
       expect(isBlockedFile(name, "application/octet-stream")).toBe(true);
     }
+  });
+
+  it("cleanFileName drops trailing dots and spaces, which Windows ignores", () => {
+    expect(cleanFileName("setup.exe.")).toBe("setup.exe");
+    expect(cleanFileName("report.pdf ")).toBe("report.pdf");
   });
 
   it("blocks executable media types whatever the name", () => {

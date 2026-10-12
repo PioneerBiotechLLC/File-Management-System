@@ -68,11 +68,19 @@ function putToBucket(url: string, file: File, contentType: string, onProgress: (
 
 type ReadResult = { status: "read" } | { status: "not_read"; reason: string } | { status: "busy" } | { error: string };
 
+/** The server answers "busy" while another of the person's AI calls runs; ask again a few times. */
+const BUSY_RETRIES = 8;
+const BUSY_WAIT_MS = 8_000;
+
 /** Waits while the server has the AI read the file. */
 async function readWithAi(slug: string, fileId: string): Promise<ReadResult> {
-  const response = await fetch(`/c/${slug}/files/${fileId}/analyze`, { method: "POST" });
-  if (!response.ok && response.status !== 400) return { error: `The AI reading step failed (${response.status}). You can write the summary yourself in Review.` };
-  return (await response.json()) as ReadResult;
+  for (let attempt = 0; ; attempt++) {
+    const response = await fetch(`/c/${slug}/files/${fileId}/analyze`, { method: "POST" });
+    if (!response.ok && response.status !== 400) return { error: `The AI reading step failed (${response.status}). You can write the summary yourself in Review.` };
+    const result = (await response.json()) as ReadResult;
+    if (!("status" in result) || result.status !== "busy" || attempt >= BUSY_RETRIES) return result;
+    await new Promise((resolve) => setTimeout(resolve, BUSY_WAIT_MS));
+  }
 }
 
 export function UploadProvider({

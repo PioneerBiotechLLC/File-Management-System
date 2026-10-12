@@ -10,7 +10,7 @@ import type { FileContext } from "@/lib/files";
 import { suggestFolder, summaryChanged, type ConfirmedSummary } from "@/lib/filing";
 import { can } from "@/lib/permissions";
 import { reindexFile } from "@/lib/search-index";
-import { getObject, objectKey } from "@/lib/storage";
+import { getObject, head, objectKey } from "@/lib/storage";
 
 /**
  * What happens to a new upload after its bytes arrive:
@@ -22,6 +22,8 @@ import { getObject, objectKey } from "@/lib/storage";
 
 /** A read that has run longer than this is taken as dead; the uploader may try again. */
 export const READ_TIMEOUT_MS = 2 * 60 * 1000;
+/** Failed reads may be tried this many times in all; after that the uploader writes the summary. */
+export const MAX_READ_ATTEMPTS = 3;
 
 type Company = { name: string; domain: string; timezone: string };
 
@@ -29,7 +31,7 @@ export type ReadOutcome =
   | { status: "read" }
   /** `retryable` when the cause was a failure or a cap, not the file itself. */
   | { status: "not_read"; reason: string; retryable: boolean }
-  /** Another request is reading it right now. */
+  /** Another request is reading it, or another of the person's AI calls is running; ask again shortly. */
   | { status: "busy" };
 
 const notWaiting = () => new UserError("That file is not waiting to be filed.");
@@ -98,7 +100,12 @@ export async function readUpload(prisma: Db, ctx: FileContext, company: Company,
   const maxMb = limitsEnv().FILES_AI_MAX_MB;
   if (file.sizeBytes > maxMb * 1024 * 1024) return notRead(`The file is larger than ${maxMb} MB, the most the AI reads.`, false);
 
-  const bytes = await getObject(objectKey(ctx.orgId, file.id, file.currentVersion));
+  // The stored object must still be the one that was checked at upload before it is loaded whole.
+  const key = objectKey(ctx.orgId, file.id, file.currentVersion);
+  const stored = await head(key);
+  if (!stored) return notRead("The file was not found in storage.", true);
+  if (stored.sizeBytes !== file.sizeBytes) return notRead("The stored file is not the one that was uploaded, so it was not read.", false);
+  const bytes = await getObject(key);
   if (!bytes) return notRead("The file was not found in storage.", true);
 
   let outcome;
@@ -114,6 +121,12 @@ export async function readUpload(prisma: Db, ctx: FileContext, company: Company,
     return notRead(`AI reading failed: ${message.slice(0, 200)}`, true);
   }
 
+  if (outcome.status === "limit_reached" && outcome.limit === "user_busy") {
+    // Another of this person's AI calls is running (a parallel upload, say). Not an attempt: the
+    // file stays in line and the browser asks again shortly.
+    await prisma.storedFile.update({ where: { id: file.id }, data: { processingStartedAt: null, attempts: { decrement: 1 } } });
+    return { status: "busy" };
+  }
   if (outcome.status === "limit_reached") return notRead(outcome.reason, true);
   if (outcome.status === "not_read") return notRead(outcome.reason, false);
   const { analysis } = outcome;
@@ -145,12 +158,17 @@ export async function readUpload(prisma: Db, ctx: FileContext, company: Company,
   return { status: "read" };
 }
 
-/** Puts a file whose read failed back in line for the AI. */
+/** Puts a file whose read failed (not one the AI read, or could not read) back in line, a few times at most. */
 export async function retryRead(prisma: Db, ctx: FileContext, fileId: string): Promise<void> {
   if (!can(ctx.role, "review.accept")) throw notWaiting();
-  const file = await prisma.storedFile.findFirst({ where: waitingWhere(ctx, fileId), select: { id: true, summaryConfirmedAt: true } });
+  const file = await prisma.storedFile.findFirst({
+    where: waitingWhere(ctx, fileId),
+    select: { id: true, status: true, readStatus: true, aiError: true, attempts: true, summaryConfirmedAt: true },
+  });
   if (!file) throw notWaiting();
   if (file.summaryConfirmedAt) throw new UserError("The summary is already confirmed.");
+  if (file.status !== "needs_review" || file.readStatus !== null || !file.aiError) throw new UserError("Only a read that failed can be tried again.");
+  if (file.attempts >= MAX_READ_ATTEMPTS) throw new UserError(`The AI has tried ${MAX_READ_ATTEMPTS} times. Please write the summary yourself.`);
   await prisma.storedFile.update({ where: { id: file.id }, data: { status: "processing", processingStartedAt: null, aiError: null, readStatus: null } });
 }
 
@@ -220,17 +238,20 @@ const tagsField = z.string().transform((raw) => {
   return tags.slice(0, 20);
 });
 
+/** Plenty for a form field; the facts are then cut to the same sizes the AI's are (factsInput). */
+const listField = z.string().max(20_000, "That list is too long.");
+
 const summaryForm = z.object({
   title: z.string().trim().max(200).transform((v) => v || null),
   summary: z.string().trim().min(1, "Write a short summary of the document.").max(2_000),
   docType: z.union([z.enum(DOC_TYPES), z.literal("")]).transform((v) => v || null),
   docDate: dateField,
-  parties: z.string().transform(splitLines),
-  references: referencesField,
-  amounts: amountsField,
-  products: z.string().transform(splitLines),
+  parties: listField.transform(splitLines),
+  references: listField.pipe(referencesField),
+  amounts: listField.pipe(amountsField),
+  products: listField.transform(splitLines),
   expiryDate: dateField,
-  tags: tagsField,
+  tags: listField.pipe(tagsField),
 });
 
 export type SummaryFormInput = z.input<typeof summaryForm>;
@@ -301,7 +322,10 @@ export async function confirmSummary(
   const parsed = summaryForm.safeParse(input);
   if (!parsed.success) throw new UserError(parsed.error.issues[0]?.message ?? "Check the summary and try again.");
   const { tags, parties, references, amounts, products, expiryDate, ...rest } = parsed.data;
-  const facts = storedFacts({ parties, references, amounts, products, expiryDate });
+  // The same limits as the AI's output: so many parties, products and references, so long each.
+  const boundedFacts = factsInput.safeParse({ parties, references, amounts, products, expiryDate: expiryDate?.toISOString().slice(0, 10) ?? null });
+  if (!boundedFacts.success) throw new UserError("Check the parties, references, amounts and products, then try again.");
+  const facts = storedFacts(boundedFacts.data);
   const confirmed: ConfirmedSummary = { ...rest, docType: rest.docType as DocType | null, facts };
 
   const aiRead = file.readStatus === "full" || file.readStatus === "partial";

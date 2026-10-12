@@ -188,21 +188,36 @@ export async function getFilesForAsk(prisma: Db, ctx: FileContext, ids: string[]
 
 const MERGE_WINDOW_MS = 30_000;
 
+/** Only the known filters, as short primitives, so nothing unexpected is written to the log. */
+function loggableFilters(filters: SearchFilters | undefined): Record<string, string | number> | null {
+  if (!filters) return null;
+  const out: Record<string, string | number> = {};
+  for (const key of Object.keys(searchFilters.shape)) {
+    const value = (filters as Record<string, unknown>)[key];
+    if (typeof value === "string" && value.trim()) out[key] = value.trim().slice(0, 100);
+    else if (typeof value === "number" && Number.isFinite(value)) out[key] = value;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 /**
- * Records a search. Typing produces a stream of growing queries, so a search that extends (or
- * shortens) the user's previous one within half a minute updates that entry instead of adding one.
+ * Records a search. Typing produces a stream of growing queries, so a search that extends the
+ * user's previous one within half a minute updates that entry instead of adding one. Backspacing
+ * leaves the longer entry as it is, so an entry can never be shortened away.
  */
 export async function logSearch(prisma: Db, ctx: FileContext, input: { q: string; hits: number; filters?: SearchFilters }): Promise<void> {
   const q = input.q.trim().slice(0, 300);
   if (!q) return;
-  const after = { query: q, hits: input.hits, ...(input.filters && Object.values(input.filters).some((v) => v != null && v !== "") ? { filters: input.filters } : {}) };
+  const filters = loggableFilters(input.filters);
+  const after = { query: q, hits: input.hits, ...(filters ? { filters } : {}) };
   const previous = await prisma.auditLog.findFirst({
     where: { orgId: ctx.orgId, userEmail: ctx.email, action: "search.instant", createdAt: { gte: new Date(Date.now() - MERGE_WINDOW_MS) } },
     orderBy: { createdAt: "desc" },
     select: { id: true, after: true },
   });
   const last = previous && typeof previous.after === "object" && previous.after && "query" in previous.after ? String(previous.after.query) : null;
-  if (previous && last !== null && (q.startsWith(last) || last.startsWith(q))) {
+  if (previous && last !== null && last.startsWith(q)) return;
+  if (previous && last !== null && q.startsWith(last)) {
     await prisma.auditLog.update({ where: { id: previous.id }, data: { after } });
     return;
   }

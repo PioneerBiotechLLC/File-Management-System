@@ -9,18 +9,20 @@ import { cleanFileName, isBlockedFile, normalizeMimeType, previewKind } from "@/
 import { folderPaths, loadFolderAccess, restrictedFolderIds } from "@/lib/folders";
 import { can } from "@/lib/permissions";
 import { reindexFile } from "@/lib/search-index";
-import { head, objectKey, presignDownload, presignUpload, remove } from "@/lib/storage";
+import { UPLOAD_URL_SECONDS, copy, head, objectKey, presignDownload, presignUpload, remove, uploadKey } from "@/lib/storage";
 
 /**
  * A new upload waits unfiled in Review: the AI reads it, the uploader confirms the summary and
  * then the folder (see intake.ts). Every query here is limited to the folders the user may see.
  */
 
-/** Matches the 15-minute lifetime of an upload URL. */
-const UPLOAD_WINDOW_MS = 15 * 60 * 1000;
+/** Matches the lifetime of an upload URL. */
+export const UPLOAD_WINDOW_MS = UPLOAD_URL_SECONDS * 1000;
+/** Uploads one person may have started and not finished within that window. */
+const MAX_PENDING_UPLOADS = 20;
 /** Matches intake.READ_TIMEOUT_MS: a read older than this no longer counts as "in progress". */
 const READING_WINDOW_MS = 2 * 60 * 1000;
-const TRASH_DAYS = 30;
+export const TRASH_DAYS = 30;
 /** FileVersion.sizeBytes is a 32-bit integer. */
 const MAX_BYTES_LIMIT = 2_000_000_000;
 const PAGE_SIZE = 50;
@@ -67,6 +69,15 @@ function visibleFiles(ctx: FileContext, extra: Prisma.StoredFileWhereInput = {})
 
 const notFound = () => new UserError("That file does not exist or you cannot open it.");
 
+/**
+ * A read-only grant on a restricted folder is read-only: files there may be changed, moved out,
+ * deleted or re-versioned only by people who can write there. Admins can always.
+ */
+function assertCanChangeIn(ctx: FileContext, folderId: string | null): void {
+  if (ctx.role === "admin" || folderId === null) return;
+  if (ctx.restricted.has(folderId) && !ctx.writable.has(folderId)) throw new UserError("You have read-only access to that folder.");
+}
+
 const LIST_SELECT = {
   id: true,
   name: true,
@@ -91,6 +102,7 @@ const REVIEW_SELECT = {
   readStatus: true,
   aiModel: true,
   aiError: true,
+  attempts: true,
   processingStartedAt: true,
   summaryConfirmedAt: true,
   suggestedFolderId: true,
@@ -177,7 +189,7 @@ async function discardPendingVersions(prisma: Db, ctx: FileContext, file: { id: 
     if (!abandoned && row.uploadedBy !== ctx.userId) throw new UserError("Someone else is uploading a new version of this file right now.");
   }
   for (const row of pending) {
-    await remove(objectKey(ctx.orgId, file.id, row.versionNo)).catch(() => undefined);
+    await remove(uploadKey(ctx.orgId, file.id, row.versionNo)).catch(() => undefined);
     await prisma.fileVersion.delete({ where: { id: row.id } });
   }
 }
@@ -202,13 +214,14 @@ export async function startUpload(prisma: Db, ctx: FileContext, rawInput: StartU
     if (!can(ctx.role, "file.rename", { ownsFile: file.uploadedBy === ctx.userId })) {
       throw new UserError("You can only add versions to files you uploaded.");
     }
+    assertCanChangeIn(ctx, file.folderId);
     if (file.sha256 === input.sha256) throw new UserError("This is identical to the current version.");
     await discardPendingVersions(prisma, ctx, file);
     const versionNo = file.currentVersion + 1;
     await prisma.fileVersion.create({
       data: { fileId: file.id, versionNo, sizeBytes: input.size, sha256: input.sha256, originalName: name, mimeType, uploadedBy: ctx.userId },
     });
-    const uploadUrl = await presignUpload(objectKey(ctx.orgId, file.id, versionNo), mimeType);
+    const uploadUrl = await presignUpload(uploadKey(ctx.orgId, file.id, versionNo), mimeType);
     return { kind: "upload", fileId: file.id, versionNo, uploadUrl, contentType: mimeType, name: file.name };
   }
 
@@ -221,6 +234,11 @@ export async function startUpload(prisma: Db, ctx: FileContext, rawInput: StartU
     });
     if (reading > 0) throw new UserError("Wait for the file being read to finish, then upload the next one.");
   }
+  // Nobody starts uploads without finishing them: each one holds a row and may hold bucket space.
+  const pending = await prisma.storedFile.count({
+    where: { orgId: ctx.orgId, uploadedBy: ctx.userId, status: "uploading", createdAt: { gte: new Date(Date.now() - UPLOAD_WINDOW_MS) } },
+  });
+  if (pending >= MAX_PENDING_UPLOADS) throw new UserError("Too many uploads are still in progress. Let them finish, then try again.");
 
   if (!input.allowDuplicate) {
     const existing = await prisma.storedFile.findFirst({
@@ -248,7 +266,7 @@ export async function startUpload(prisma: Db, ctx: FileContext, rawInput: StartU
     },
     select: { id: true },
   });
-  const uploadUrl = await presignUpload(objectKey(ctx.orgId, file.id, 1), mimeType);
+  const uploadUrl = await presignUpload(uploadKey(ctx.orgId, file.id, 1), mimeType);
   return { kind: "upload", fileId: file.id, versionNo: 1, uploadUrl, contentType: mimeType, name };
 }
 
@@ -262,9 +280,10 @@ type ConfirmResult = {
 };
 
 /**
- * Step 2: checks the bytes arrived with the size the browser declared, then makes the file or
- * version real. A new file goes to "processing" for the AI to read (intake.readUpload), unless a
- * folder was chosen up front, which files it at once. Confirming twice is harmless.
+ * Step 2: checks the bytes arrived with the size the browser declared, copies them from the
+ * staging key to the version's own key, then makes the file or version real. A new file goes to
+ * "processing" for the AI to read (intake.readUpload), unless a folder was chosen up front, which
+ * files it at once. Confirming twice is harmless.
  */
 export async function confirmUpload(
   prisma: Db,
@@ -272,8 +291,8 @@ export async function confirmUpload(
   input: { fileId: string; versionNo: number },
 ): Promise<ConfirmResult> {
   const file = await prisma.storedFile.findFirst({
-    where: { id: input.fileId, orgId: ctx.orgId },
-    select: { id: true, name: true, originalName: true, folderId: true, status: true, currentVersion: true, uploadedBy: true, deletedAt: true },
+    where: { id: input.fileId, orgId: ctx.orgId, deletedAt: null },
+    select: { id: true, name: true, originalName: true, folderId: true, status: true, currentVersion: true, uploadedBy: true },
   });
   const version = await prisma.fileVersion.findUnique({
     where: { fileId_versionNo: { fileId: input.fileId, versionNo: input.versionNo } },
@@ -295,16 +314,20 @@ export async function confirmUpload(
   if (!isNewFile && !can(ctx.role, "file.rename", { ownsFile: file.uploadedBy === ctx.userId })) {
     throw new UserError("You can only add versions to files you uploaded.");
   }
+  if (!isNewFile) assertCanChangeIn(ctx, file.folderId);
 
-  const key = objectKey(ctx.orgId, file.id, input.versionNo);
-  const stored = await head(key);
+  const staging = uploadKey(ctx.orgId, file.id, input.versionNo);
+  const stored = await head(staging);
   if (!stored) throw new UserError("The file did not finish uploading. Please try again.");
   if (stored.sizeBytes !== version.sizeBytes) {
-    await remove(key).catch(() => undefined);
+    await remove(staging).catch(() => undefined);
     if (isNewFile) await prisma.storedFile.delete({ where: { id: file.id } });
     else await prisma.fileVersion.delete({ where: { id: version.id } });
     throw new UserError("The uploaded file was not the size expected, so it was discarded. Please try again.");
   }
+  // From here on only the copy is ever read; the upload URL can no longer change what was checked.
+  await copy(staging, objectKey(ctx.orgId, file.id, input.versionNo), version.mimeType ?? "application/octet-stream");
+  await remove(staging).catch(() => undefined);
 
   if (isNewFile) {
     const folderId = file.folderId && ctx.writable.has(file.folderId) ? file.folderId : null;
@@ -356,7 +379,7 @@ export async function confirmUpload(
 async function findFile(prisma: Db, ctx: FileContext, fileId: string) {
   const file = await prisma.storedFile.findFirst({
     where: visibleFiles(ctx, { id: fileId }),
-    select: { id: true, name: true, folderId: true, currentVersion: true, uploadedBy: true, sha256: true, summaryConfirmedAt: true },
+    select: { id: true, name: true, mimeType: true, folderId: true, currentVersion: true, uploadedBy: true, sha256: true, summaryConfirmedAt: true },
   });
   if (!file) throw notFound();
   return file;
@@ -373,7 +396,7 @@ export type ListFilesOptions = {
 export async function listFiles(prisma: Db, ctx: FileContext, options: ListFilesOptions = {}) {
   const sort = options.sort ?? "createdAt";
   const dir = options.dir ?? (sort === "name" ? "asc" : "desc");
-  const page = Math.max(1, Math.floor(options.page ?? 1));
+  const page = Number.isSafeInteger(options.page) && options.page! > 0 ? options.page! : 1;
   if (options.folderId !== undefined && !ctx.visible.has(options.folderId)) return { items: [], total: 0, page, pages: 1 };
 
   const where = visibleFiles(ctx, options.folderId !== undefined ? { folderId: options.folderId } : {});
@@ -495,6 +518,7 @@ export async function moveFile(prisma: Db, ctx: FileContext, input: { fileId: st
   const ownsFile = file.uploadedBy === ctx.userId;
   const allowed = file.folderId === null ? can(ctx.role, "review.accept") && (ownsFile || ctx.role === "admin") : can(ctx.role, "file.move", { ownsFile });
   if (!allowed) throw new UserError("You can only move files you uploaded.");
+  assertCanChangeIn(ctx, file.folderId);
   if (!ctx.writable.has(input.folderId)) throw new UserError("You cannot file into that folder.");
   if (file.folderId === null && !file.summaryConfirmedAt) throw new UserError("Confirm the summary before filing.");
   if (file.folderId === input.folderId) return;
@@ -521,7 +545,9 @@ export async function moveFile(prisma: Db, ctx: FileContext, input: { fileId: st
 export async function renameFile(prisma: Db, ctx: FileContext, input: { fileId: string; name: string }): Promise<void> {
   const file = await findFile(prisma, ctx, input.fileId);
   if (!can(ctx.role, "file.rename", { ownsFile: file.uploadedBy === ctx.userId })) throw new UserError("You can only rename files you uploaded.");
+  assertCanChangeIn(ctx, file.folderId);
   const name = cleanFileName(z.string().min(1).max(1_000).parse(input.name));
+  if (isBlockedFile(name, file.mimeType)) throw new UserError("A file cannot be renamed to an executable or script.");
   if (name === file.name) return;
   await prisma.$transaction([
     prisma.storedFile.update({ where: { id: file.id }, data: { name } }),
@@ -568,6 +594,7 @@ export async function updateFileDetails(
 ): Promise<void> {
   const file = await findFile(prisma, ctx, input.fileId);
   if (!can(ctx.role, "file.rename", { ownsFile: file.uploadedBy === ctx.userId })) throw new UserError("You can only edit files you uploaded.");
+  assertCanChangeIn(ctx, file.folderId);
   const parsed = detailsInput.safeParse(input);
   if (!parsed.success) throw new UserError(parsed.error.issues[0]?.message ?? "Check the details and try again.");
   const before = await prisma.storedFile.findUniqueOrThrow({
@@ -595,6 +622,7 @@ export async function updateFileDetails(
 export async function deleteFile(prisma: Db, ctx: FileContext, input: { fileId: string }): Promise<void> {
   const file = await findFile(prisma, ctx, input.fileId);
   if (!can(ctx.role, "file.delete", { ownsFile: file.uploadedBy === ctx.userId })) throw new UserError("You can only delete files you uploaded.");
+  assertCanChangeIn(ctx, file.folderId);
   await prisma.$transaction([
     prisma.storedFile.update({ where: { id: file.id }, data: { deletedAt: new Date() } }),
     prisma.auditLog.create({
@@ -611,6 +639,10 @@ export async function restoreFile(prisma: Db, ctx: FileContext, input: { fileId:
   });
   if (!file) throw new UserError("That file cannot be restored. It may have been purged after 30 days.");
   if (!can(ctx.role, "file.restore", { ownsFile: file.uploadedBy === ctx.userId })) throw new UserError("You can only restore files you uploaded.");
+  // Restoring puts the file back where it was, so that folder must still accept files from this person.
+  if (ctx.role !== "admin" && file.folderId && !ctx.writable.has(file.folderId)) {
+    throw new UserError("That file's folder no longer accepts your files, so an admin has to restore it.");
+  }
   await prisma.$transaction([
     prisma.storedFile.update({ where: { id: file.id }, data: { deletedAt: null } }),
     prisma.auditLog.create({

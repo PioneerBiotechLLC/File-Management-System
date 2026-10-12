@@ -21,16 +21,24 @@ async function companiesFor(prisma: Db, email: string, userId: string | null): P
   return [org?.id ?? null];
 }
 
-/** Records a sign-in or sign-out once in each company the person belongs to. */
-export async function recordSession(prisma: Db, action: "auth.signin" | "auth.signout", user: { id: string; email: string }): Promise<void> {
+/** Records a sign-in, sign-out or account link once in each company the person belongs to. */
+export async function recordSession(
+  prisma: Db,
+  action: "auth.signin" | "auth.signout" | "auth.linked",
+  user: { id: string; email: string },
+  after?: Prisma.InputJsonObject,
+): Promise<void> {
   const orgIds = await companiesFor(prisma, user.email, user.id);
   await prisma.auditLog.createMany({
-    data: orgIds.map((orgId) => ({ orgId, userEmail: user.email, action, targetType: "user", targetId: user.id })),
+    data: orgIds.map((orgId) => ({ orgId, userEmail: user.email, action, targetType: "user", targetId: user.id, after })),
   });
 }
 
-/** Records a refused sign-in: someone not on the list, or deactivated. */
-export async function recordRefusedSignIn(prisma: Db, email: string, reason: "not_listed" | "inactive"): Promise<void> {
+export type RefusalReason = "not_listed" | "inactive" | "account_mismatch";
+
+/** Records a refused sign-in from an allowed tenant: not on the list, deactivated, or the wrong Microsoft account. */
+export async function recordRefusedSignIn(prisma: Db, rawEmail: string, reason: RefusalReason): Promise<void> {
+  const email = rawEmail.slice(0, 200);
   const user = await prisma.appUser.findUnique({ where: { email }, select: { id: true } });
   const orgIds = await companiesFor(prisma, email, user?.id ?? null);
   await prisma.auditLog.createMany({
@@ -71,7 +79,7 @@ export async function listAuditLog(
       input.category ? { OR: LOG_CATEGORIES[input.category].prefixes.map((p) => ({ action: { startsWith: p } })) } : {},
     ],
   };
-  const page = Math.max(1, Math.floor(input.page ?? 1));
+  const page = Number.isSafeInteger(input.page) && input.page! > 0 ? input.page! : 1;
   const [items, total, people] = await Promise.all([
     prisma.auditLog.findMany({ where, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip: (page - 1) * LOG_PAGE_SIZE, take: LOG_PAGE_SIZE }),
     prisma.auditLog.count({ where }),
@@ -121,7 +129,11 @@ const text = (value: unknown): string | undefined => (typeof value === "string" 
 const DETAIL_LABELS: Record<string, string> = { title: "title", summary: "summary", docType: "type", docDate: "date", tags: "tags" };
 const money = (value: unknown) => (typeof value === "number" ? `$${value.toFixed(value < 0.1 ? 3 : 2)}` : null);
 const cap = (value: unknown) => (typeof value === "number" ? `$${value.toFixed(2)}` : "the default");
-const REFUSED: Record<string, string> = { not_listed: "not on the list of users", inactive: "account deactivated" };
+const REFUSED: Record<string, string> = {
+  not_listed: "not on the list of users",
+  inactive: "account deactivated",
+  account_mismatch: "a different Microsoft account uses this email",
+};
 
 /** A plain-English sentence for one log entry, as text and links. */
 export function describeEntry(entry: Entry, lookups: Lookups): LogPart[] {
@@ -144,6 +156,8 @@ export function describeEntry(entry: Entry, lookups: Lookups): LogPart[] {
       return ["Signed out"];
     case "auth.refused":
       return [`Was refused sign-in (${REFUSED[text(after.reason) ?? ""] ?? "not allowed"})`];
+    case "auth.linked":
+      return ["Signed in for the first time; this Microsoft account is now the only one that can"];
 
     case "file.upload":
       return ["Uploaded ", file, after.folderId ? " to " : " (waiting in ", folder(after.folderId), after.folderId ? "" : ")"];
@@ -161,6 +175,8 @@ export function describeEntry(entry: Entry, lookups: Lookups): LogPart[] {
       return ["Deleted ", file];
     case "file.restore":
       return ["Restored ", file];
+    case "file.purge":
+      return [`Removed ${text(before.name) ?? "a file"} for good, 30 days after it was deleted`];
     case "file.download":
     case "file.preview": {
       const verb = entry.action === "file.download" ? "Downloaded " : "Viewed ";

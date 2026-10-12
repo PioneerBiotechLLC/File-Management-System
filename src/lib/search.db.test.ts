@@ -6,7 +6,7 @@ import { UserError } from "./errors";
 import { fileContext } from "./files";
 import { grantAccess } from "./folder-admin";
 import { indexTextFor, reindexAll, reindexFile } from "./search-index";
-import { logSearch, searchFiles } from "./search";
+import { logSearch, searchFiles, type SearchFilters } from "./search";
 import { addMember } from "./users";
 
 describe.skipIf(!TEST_DATABASE_URL)("search (database)", () => {
@@ -176,16 +176,17 @@ describe.skipIf(!TEST_DATABASE_URL)("search (database)", () => {
     expect((await searchFiles(prisma, await ctxFor("sara"), { q: "النور" })).hits.map((h) => h.id)).toEqual([file.po]);
   });
 
-  it("logs a search once while the person keeps typing it", async () => {
+  it("logs a search once while the person keeps typing it, never shortened, with only known filters", async () => {
     const ctx = await ctxFor("sara");
     await logSearch(prisma, ctx, { q: "ins", hits: 3 });
     await logSearch(prisma, ctx, { q: "insul", hits: 3 });
-    await logSearch(prisma, ctx, { q: "insulin gulf", hits: 1, filters: { docType: "quotation" } });
+    await logSearch(prisma, ctx, { q: "insulin gulf", hits: 1, filters: { docType: "quotation", pad: "x".repeat(500), nested: { a: 1 } } as SearchFilters });
+    // Backspacing to a prefix does not rewrite the longer entry.
     await logSearch(prisma, ctx, { q: "insulin", hits: 3 });
     await logSearch(prisma, ctx, { q: "noor", hits: 1 });
     const rows = await prisma.auditLog.findMany({ where: { orgId, action: "search.instant" }, orderBy: { createdAt: "asc" } });
     expect(rows.map((r) => r.after)).toEqual([
-      { query: "insulin", hits: 3 },
+      { query: "insulin gulf", hits: 1, filters: { docType: "quotation" } },
       { query: "noor", hits: 1 },
     ]);
     expect(rows[0]).toMatchObject({ userEmail: "sara@api-pharma.net", targetId: ids.sara });

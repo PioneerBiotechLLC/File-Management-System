@@ -29,7 +29,7 @@ Search looks only at what people confirmed: the name, title, summary, type, date
 
 The AI reads with `ANTHROPIC_MODEL` (Claude Sonnet 5.5 by default) and chooses folders with `ANTHROPIC_MODEL_LIGHT` (Claude Haiku 5.5). A typical one- or two-page document costs about $0.01–0.03 to read; a long PDF up to about $0.40. The folder choice after an edited summary costs well under a cent. Every call is recorded with its tokens and cost.
 
-Spend is capped in USD per person per day and month, and per company per day and month. The defaults come from `AI_USER_DAILY_USD`, `AI_USER_MONTHLY_USD`, `AI_DAILY_USD` and `AI_MONTHLY_USD`; admins override them in Usage. A cap can be overshot by at most one call. When a cap is reached the AI stops and people write summaries by hand until it resets, so uploading never stops. Set a spend limit in the Anthropic console as well.
+Spend is capped in USD per person per day and month, and per company per day and month. The defaults come from `AI_USER_DAILY_USD`, `AI_USER_MONTHLY_USD`, `AI_DAILY_USD` and `AI_MONTHLY_USD`; admins override them in Usage, but never above `AI_DAILY_USD_MAX` and `AI_MONTHLY_USD_MAX`, which only the environment sets. Each call reserves an estimate against the caps the moment it starts, and each person runs one AI call at a time, so parallel requests cannot slip past a cap; a cap can still be overshot by at most one call. A model that is not in the price table (`src/lib/ai-prices.ts`) is refused rather than charged at $0, and `AI_MAX_CALLS_PER_DAY=0` switches the AI off. When a cap is reached the AI stops and people write summaries by hand until it resets, so uploading never stops. Set a spend limit in the Anthropic console as well.
 
 Safeguards against text planted in documents: the model is told that documents are data, not instructions; it can only choose among the folders the uploader may write to, which the code enforces again; the output must match a strict schema; and a person confirms the summary and the folder before anything is filed.
 
@@ -54,7 +54,7 @@ Restricted folders (HR and Finance / Bank by default) are visible only to admins
 
 ```bash
 pnpm install
-cp .env.example .env              # fill in at least DATABASE_URL, AUTH_SECRET and the Entra values
+cp .env.example .env              # fill in at least DATABASE_URL, AUTH_SECRET, the Entra values and AUTH_ALLOWED_TENANT_IDS
 pnpm exec prisma dev --name files # optional: a local Postgres, prints its connection string
 pnpm db:deploy
 pnpm org add api-pharma --name "API Pharma" --domain api-pharma.net
@@ -62,7 +62,13 @@ pnpm user add you@api-pharma.net --owner
 pnpm dev
 ```
 
-`GET /api/health` reports what is configured and reachable.
+`GET /api/health` answers `{ ok }` to anyone and the details (what is missing, what is reachable) to signed-in users.
+
+## Sign-in and security
+
+Only Microsoft accounts from the tenants in `AUTH_ALLOWED_TENANT_IDS` (or the tenant named in `AUTH_MICROSOFT_ENTRA_ID_ISSUER`) can sign in; Microsoft does not verify the email claim across tenants, so other tenants are turned away before the email is looked at. The first Microsoft account that signs in as a listed user is remembered (tenant and object id) and is afterwards the only one that can; someone with the same email on another account is refused and logged. To move a user to a new account, clear `entraTid`/`entraOid` on their row.
+
+Uploads go to a staging key in the bucket and are copied to their final key when confirmed, so the upload URL cannot change a file after it was checked. A read-only grant on a restricted folder is read-only: files there can only be moved, renamed, replaced or deleted by people who can write there. `/api/cron/sweep` (Vercel Cron, daily, `Authorization: Bearer $CRON_SECRET`) removes abandoned uploads and purges files 30 days after deletion. Every response carries a Content-Security-Policy and the usual security headers.
 
 ## Commands
 

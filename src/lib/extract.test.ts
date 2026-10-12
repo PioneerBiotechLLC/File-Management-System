@@ -1,7 +1,7 @@
 import { crc32 } from "node:zlib";
 import ExcelJS from "exceljs";
 import { describe, expect, it } from "vitest";
-import { cellText, decodeText, detectFileKind, extract } from "./extract";
+import { cellText, decodeText, detectFileKind, extract, zipInflatedSize } from "./extract";
 
 const bytes = (s: string) => new Uint8Array(Buffer.from(s, "latin1"));
 const PDF = bytes("%PDF-1.7\n1 0 obj\n<<>>\nendobj\n");
@@ -64,6 +64,13 @@ async function xlsx(build: (wb: ExcelJS.Workbook) => void): Promise<Uint8Array> 
   build(wb);
   return new Uint8Array(await wb.xlsx.writeBuffer());
 }
+
+describe("zipInflatedSize", () => {
+  it("sums the unpacked sizes from the central directory without unpacking anything", () => {
+    expect(zipInflatedSize(zip({ "a.txt": "hello", "b/c.txt": "world!!" }))).toEqual({ total: 12, entries: 2 });
+    expect(zipInflatedSize(new Uint8Array([0x50, 0x4b, 0x03, 0x04, 1, 2, 3]))).toBeNull();
+  });
+});
 
 describe("detectFileKind", () => {
   it("trusts the bytes over the name and the browser's type", () => {
@@ -184,6 +191,21 @@ describe("extract", () => {
     expect(out).toMatchObject({ kind: "text", readStatus: "partial" });
     expect(out.kind === "text" && out.text.startsWith("PO-4512")).toBe(true);
     expect(out.kind === "text" && out.text.length).toBeGreaterThan(20_000);
+  });
+
+  it("refuses an Office file that would unpack to gigabytes, before opening it", async () => {
+    const bomb = docx(["x"]);
+    // Claim 3 GB for the first entry in the central directory, as a zip bomb does.
+    const view = new DataView(bomb.buffer, bomb.byteOffset, bomb.byteLength);
+    let end = -1;
+    for (let i = bomb.length - 22; i >= 0; i--) {
+      if (view.getUint32(i, true) === 0x06054b50) {
+        end = i;
+        break;
+      }
+    }
+    view.setUint32(view.getUint32(end + 16, true) + 24, 3_000_000_000, true);
+    expect(await extract(bomb, "bomb.docx", "")).toMatchObject({ kind: "unreadable", reason: expect.stringContaining("unpacks to more than") });
   });
 
   it("stores damaged Office files without reading them", async () => {

@@ -4,6 +4,12 @@ import type { Db } from "@/lib/db";
 
 const callClaude = vi.fn();
 const countTokens = vi.fn();
+const checkBudget = vi.fn((..._args: unknown[]) => Promise.resolve({ ok: true as const }));
+
+vi.mock("@/lib/ai-limits", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/ai-limits")>();
+  return { ...actual, checkBudget: (...args: unknown[]) => checkBudget(...args) };
+});
 
 vi.mock("@/lib/ai", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/ai")>();
@@ -164,7 +170,7 @@ describe("analyzeFile", () => {
 
   it("reports which cap stopped the call", async () => {
     callClaude.mockRejectedValue(new AiLimitError("user_day", "You have reached your daily AI limit ($2.00)."));
-    expect(await analyzeFile(prisma, ctx, textRequest("x"))).toEqual({ status: "limit_reached", reason: "You have reached your daily AI limit ($2.00)." });
+    expect(await analyzeFile(prisma, ctx, textRequest("x"))).toEqual({ status: "limit_reached", reason: "You have reached your daily AI limit ($2.00).", limit: "user_day" });
   });
 
   it("does not call Claude for unreadable files", async () => {
@@ -180,6 +186,15 @@ describe("analyzeFile", () => {
     countTokens.mockResolvedValue({ input_tokens: 450_000 });
     const outcome = await analyzeFile(prisma, ctx, { ...textRequest(""), extraction: pdfExtraction });
     expect(outcome).toMatchObject({ status: "not_read" });
+    expect(callClaude).not.toHaveBeenCalled();
+  });
+
+  it("does not even send a PDF to be counted when a cap is already reached", async () => {
+    checkBudget.mockResolvedValueOnce({ ok: false, reason: "user_day", message: "You have reached your daily AI limit ($2.00)." } as never);
+    countTokens.mockClear();
+    const outcome = await analyzeFile(prisma, ctx, { ...textRequest(""), extraction: pdfExtraction });
+    expect(outcome).toEqual({ status: "limit_reached", reason: "You have reached your daily AI limit ($2.00).", limit: "user_day" });
+    expect(countTokens).not.toHaveBeenCalled();
     expect(callClaude).not.toHaveBeenCalled();
   });
 

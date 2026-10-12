@@ -1,3 +1,4 @@
+import { auth } from "@/auth";
 import { db } from "@/lib/db";
 import { EnvError, environmentProblems } from "@/lib/env";
 import { checkBucket } from "@/lib/storage";
@@ -20,7 +21,10 @@ function addReason(reasons: string[], part: string, error: unknown) {
   if (!(error instanceof EnvError)) reasons.push(`${part}: ${message(error)}`);
 }
 
-/** Public status check: `ok` is false, with the reason, when anything required is missing or down. */
+/**
+ * Status check. Anyone gets `ok`; the reasons, latencies and what is configured are for signed-in
+ * users only, so the public answer says nothing about how the server is set up.
+ */
 export async function GET() {
   const reasons = environmentProblems();
   const { ANTHROPIC_API_KEY } = process.env;
@@ -44,8 +48,11 @@ export async function GET() {
   }
 
   const ok = reasons.length === 0;
+  const headers = { "Cache-Control": "no-store" };
+  const session = await auth().catch(() => null);
+  if (!session?.user?.id) return Response.json({ ok }, { status: ok ? 200 : 503, headers });
   return Response.json(
     { ok, ...(ok ? {} : { reason: reasons.join("; ") }), db: database, storage, ai: { configured: Boolean(ANTHROPIC_API_KEY?.trim()) } },
-    { status: ok ? 200 : 503, headers: { "Cache-Control": "no-store" } },
+    { status: ok ? 200 : 503, headers },
   );
 }

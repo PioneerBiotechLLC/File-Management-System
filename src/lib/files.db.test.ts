@@ -15,6 +15,10 @@ vi.mock("@/lib/storage", async (importOriginal) => {
     presignDownload: async (key: string, name: string, o: { inline?: boolean } = {}) =>
       `https://bucket.test/get/${key}?name=${encodeURIComponent(name)}&inline=${o.inline ? 1 : 0}`,
     head: async (key: string) => (stored.has(key) ? { sizeBytes: stored.get(key)!, contentType: null } : null),
+    copy: async (from: string, to: string) => {
+      if (!stored.has(from)) throw new Error(`no object at ${from}`);
+      stored.set(to, stored.get(from)!);
+    },
     remove: async (key: string) => {
       removed.push(key);
       stored.delete(key);
@@ -54,7 +58,7 @@ describe.skipIf(!TEST_DATABASE_URL)("files and folders (database)", () => {
       allowDuplicate: true,
     });
     if (started.kind !== "upload") throw new Error("expected an upload");
-    stored.set(`${orgId}/${started.fileId}/${started.versionNo}`, content.length);
+    stored.set(`${orgId}/${started.fileId}/${started.versionNo}.upload`, content.length);
     return files.confirmUpload(prisma, ctx, { fileId: started.fileId, versionNo: started.versionNo });
   }
 
@@ -90,15 +94,18 @@ describe.skipIf(!TEST_DATABASE_URL)("files and folders (database)", () => {
       });
       expect(started).toMatchObject({ kind: "upload", versionNo: 1, name: "QT-2291.pdf", contentType: "application/pdf" });
       if (started.kind !== "upload") return;
-      expect(started.uploadUrl).toBe(`https://bucket.test/put/${orgId}/${started.fileId}/1`);
+      // The browser uploads to a staging key; the confirmed copy lives at the version's own key.
+      expect(started.uploadUrl).toBe(`https://bucket.test/put/${orgId}/${started.fileId}/1.upload`);
 
       // Not visible while uploading.
       expect((await files.listFiles(prisma, ctx, { folderId: folder["Sales/Quotations"] })).total).toBe(0);
       expect(await files.getFile(prisma, ctx, started.fileId)).toBeNull();
 
-      stored.set(`${orgId}/${started.fileId}/1`, 11);
+      stored.set(`${orgId}/${started.fileId}/1.upload`, 11);
       const done = await files.confirmUpload(prisma, ctx, { fileId: started.fileId, versionNo: 1 });
       expect(done).toMatchObject({ status: "ready", folderPath: "Sales / Quotations", name: "QT-2291.pdf" });
+      expect(stored.get(`${orgId}/${started.fileId}/1`)).toBe(11);
+      expect(removed).toContain(`${orgId}/${started.fileId}/1.upload`);
 
       const detail = await files.getFile(prisma, ctx, started.fileId);
       expect(detail).toMatchObject({ status: "ready", filedBy: "sara@api-pharma.net", currentVersion: 1, folderPath: "Sales / Quotations" });
@@ -140,17 +147,29 @@ describe.skipIf(!TEST_DATABASE_URL)("files and folders (database)", () => {
       await expect(files.confirmUpload(prisma, ctx, { fileId: missing.fileId, versionNo: 1 })).rejects.toThrow(/did not finish/);
 
       const wrong = await make("wrong.pdf");
-      stored.set(`${orgId}/${wrong.fileId}/1`, 5);
+      stored.set(`${orgId}/${wrong.fileId}/1.upload`, 5);
       await expect(files.confirmUpload(prisma, ctx, { fileId: wrong.fileId, versionNo: 1 })).rejects.toThrow(/not the size expected/);
-      expect(removed).toContain(`${orgId}/${wrong.fileId}/1`);
+      expect(removed).toContain(`${orgId}/${wrong.fileId}/1.upload`);
+      expect(stored.has(`${orgId}/${wrong.fileId}/1`)).toBe(false);
       expect(await prisma.storedFile.count({ where: { id: wrong.fileId } })).toBe(0);
     });
 
     it("lets only the uploader confirm", async () => {
       const s = await files.startUpload(prisma, await ctxFor("sara"), { name: "mine.pdf", size: 5, mimeType: "application/pdf", sha256: sha("mine"), allowDuplicate: true });
       if (s.kind !== "upload") throw new Error("expected upload");
-      stored.set(`${orgId}/${s.fileId}/1`, 5);
+      stored.set(`${orgId}/${s.fileId}/1.upload`, 5);
       await expect(files.confirmUpload(prisma, await ctxFor("omar"), { fileId: s.fileId, versionNo: 1 })).rejects.toThrow(UserError);
+    });
+
+    it("stops one person from leaving too many uploads unfinished", async () => {
+      const ctx = await ctxFor("omar");
+      for (let i = 0; i < 20; i++) {
+        await files.startUpload(prisma, ctx, { name: `pending-${i}.pdf`, size: 5, mimeType: "application/pdf", sha256: sha(`pending ${i}`), allowDuplicate: true });
+      }
+      await expect(
+        files.startUpload(prisma, ctx, { name: "one-more.pdf", size: 5, mimeType: "application/pdf", sha256: sha("one more"), allowDuplicate: true }),
+      ).rejects.toThrow(/Too many uploads/);
+      await prisma.storedFile.deleteMany({ where: { uploadedBy: ids.omar, status: "uploading" } });
     });
   });
 
@@ -196,7 +215,7 @@ describe.skipIf(!TEST_DATABASE_URL)("files and folders (database)", () => {
       // Pending: the file still shows version 1.
       expect((await files.getFile(prisma, ctx, first.fileId))?.currentVersion).toBe(1);
 
-      stored.set(`${orgId}/${first.fileId}/2`, 15);
+      stored.set(`${orgId}/${first.fileId}/2.upload`, 15);
       await files.confirmUpload(prisma, ctx, { fileId: first.fileId, versionNo: 2 });
       const detail = await files.getFile(prisma, ctx, first.fileId);
       expect(detail).toMatchObject({ currentVersion: 2, sizeBytes: 15, mimeType: "application/vnd.x" });
@@ -359,6 +378,60 @@ describe.skipIf(!TEST_DATABASE_URL)("files and folders (database)", () => {
       const done = await upload("sara", "old.pdf", "old deleted", folder["Sales/Quotations"]);
       await prisma.storedFile.update({ where: { id: done.fileId }, data: { deletedAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000) } });
       await expect(files.restoreFile(prisma, await ctxFor("sara"), { fileId: done.fileId })).rejects.toThrow(/purged/);
+    });
+
+    it("never lets a file be renamed into an executable", async () => {
+      const done = await upload("sara", "tool.bin", "a binary", folder["Sales/Quotations"]);
+      await expect(files.renameFile(prisma, await ctxFor("sara"), { fileId: done.fileId, name: "tool.exe" })).rejects.toThrow(/executable or script/);
+      await expect(files.renameFile(prisma, await ctxFor("admin"), { fileId: done.fileId, name: "tool.exe." })).rejects.toThrow(/executable or script/);
+    });
+
+    it("restores only into a folder that still accepts the person's files", async () => {
+      const { id: folderId } = await createFolder(prisma, { orgId, email: "t" }, { name: "Closing", nameAr: "", description: "", access: "everyone", parentId: null });
+      const done = await upload("sara", "closing.pdf", "closing doc", folderId);
+      const sara = await ctxFor("sara");
+      await files.deleteFile(prisma, sara, { fileId: done.fileId });
+      await setFolderActive(prisma, { orgId, email: "t" }, folderId, false);
+      await expect(files.restoreFile(prisma, await ctxFor("sara"), { fileId: done.fileId })).rejects.toThrow(/admin has to restore/);
+      await files.restoreFile(prisma, await ctxFor("admin"), { fileId: done.fileId });
+      expect(await files.getFile(prisma, await ctxFor("admin"), done.fileId)).not.toBeNull();
+    });
+  });
+
+  describe("read-only grants are read-only", () => {
+    let fileId: string;
+    const hrGrant = () => ({ folderId: folder.HR!, userId: ids.sara! });
+
+    beforeAll(async () => {
+      // Sara's own file ends up in HR, where she can only read.
+      fileId = (await upload("sara", "contract-sara.pdf", "sara contract", folder["Sales/Quotations"])).fileId;
+      await files.moveFile(prisma, await ctxFor("admin"), { fileId, folderId: folder["HR/Contracts"]! });
+      await grantAccess(prisma, { orgId, email: "t" }, { ...hrGrant(), canWrite: false });
+    });
+
+    afterAll(async () => revokeAccess(prisma, { orgId, email: "t" }, hrGrant()));
+
+    it("lets her see the file but not move it out, change it, delete it or replace its bytes", async () => {
+      const sara = await ctxFor("sara");
+      expect(await files.getFile(prisma, sara, fileId)).not.toBeNull();
+      await expect(files.moveFile(prisma, sara, { fileId, folderId: folder.General! })).rejects.toThrow(/read-only access/);
+      await expect(files.renameFile(prisma, sara, { fileId, name: "renamed.pdf" })).rejects.toThrow(/read-only access/);
+      await expect(files.deleteFile(prisma, sara, { fileId })).rejects.toThrow(/read-only access/);
+      await expect(
+        files.updateFileDetails(prisma, sara, { fileId, title: "t", summary: "", docType: "", docDate: "", tags: "" }),
+      ).rejects.toThrow(/read-only access/);
+      await expect(
+        files.startUpload(prisma, sara, { name: "v2.pdf", size: 5, mimeType: "application/pdf", sha256: sha("v2"), fileId }),
+      ).rejects.toThrow(/read-only access/);
+      expect(await files.getFile(prisma, sara, fileId)).toMatchObject({ name: "contract-sara.pdf", folderPath: "HR / Contracts" });
+    });
+
+    it("allows all of that once the grant can write", async () => {
+      await grantAccess(prisma, { orgId, email: "t" }, { ...hrGrant(), canWrite: true });
+      const sara = await ctxFor("sara");
+      await files.renameFile(prisma, sara, { fileId, name: "renamed.pdf" });
+      await files.moveFile(prisma, sara, { fileId, folderId: folder.General! });
+      expect(await files.getFile(prisma, sara, fileId)).toMatchObject({ name: "renamed.pdf", folderPath: "General" });
     });
   });
 

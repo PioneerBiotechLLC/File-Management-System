@@ -25,6 +25,8 @@ describe("describeEntry", () => {
     expect(sentence("auth.signin", "u1", undefined, undefined, "user")).toBe("Signed in");
     expect(sentence("auth.signout", "u1", undefined, undefined, "user")).toBe("Signed out");
     expect(sentence("auth.refused", "x@y.com", undefined, { reason: "not_listed" }, "user")).toBe("Was refused sign-in (not on the list of users)");
+    expect(sentence("auth.refused", "x@y.com", undefined, { reason: "account_mismatch" }, "user")).toBe("Was refused sign-in (a different Microsoft account uses this email)");
+    expect(sentence("auth.linked", "u9", undefined, { tenant: "t" }, "user")).toBe("Signed in for the first time; this Microsoft account is now the only one that can");
   });
 
   it("names files and folders, linking only files that still exist", () => {
@@ -35,6 +37,7 @@ describe("describeEntry", () => {
     expect(sentence("file.delete", "f2", { name: "Old quote.pdf" })).toBe("Deleted Old quote.pdf");
     expect(sentence("file.delete", "gone", { name: "Purged.pdf" })).toBe("Deleted Purged.pdf");
     expect(sentence("file.restore", "gone")).toBe("Restored a file that has since been removed");
+    expect(sentence("file.purge", "gone", { name: "Old.pdf" })).toBe("Removed Old.pdf for good, 30 days after it was deleted");
   });
 
   it("describes renames, edits, versions and downloads", () => {

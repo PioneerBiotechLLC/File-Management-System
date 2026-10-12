@@ -1,8 +1,10 @@
-import type Anthropic from "@anthropic-ai/sdk";
+import Anthropic from "@anthropic-ai/sdk";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { TEST_DATABASE_URL, freshDatabase, migrationNames } from "@/test/database";
-import { AiLimitError, callClaude } from "./ai";
+import { AiLimitError, RESERVE_USD, callClaude } from "./ai";
+import { setCompanyLimits } from "./ai-limits";
+import { UserError } from "./errors";
 
 function fakeClient(create: (...args: unknown[]) => Promise<unknown>) {
   return { beta: { messages: { create } } } as unknown as Pick<Anthropic, "beta">;
@@ -50,6 +52,37 @@ describe.skipIf(!TEST_DATABASE_URL)("callClaude and the daily cap (database)", (
     const row = await prisma.aiUsage.findFirstOrThrow({ where: { orgId } });
     expect(row).toMatchObject({ fileId: "file1", purpose: "file_analysis", inputTokens: 1_000, outputTokens: 200, cacheReadTokens: 500, error: null });
     expect(row.costUsd).toBeCloseTo((1_000 * 2 + 200 * 10 + 500 * 0.1) / 1e6, 10);
+    expect(row.finishedAt).not.toBeNull();
+  });
+
+  it("refuses a model without a price before calling anything", async () => {
+    const create = vi.fn().mockResolvedValue(reply);
+    await expect(callClaude(prisma, ctx(), { ...params, model: "claude-unknown" }, fakeClient(create))).rejects.toThrow(/No price is known/);
+    expect(create).not.toHaveBeenCalled();
+    expect(await prisma.aiUsage.count()).toBe(0);
+  });
+
+  it("charges a response from an unpriced fallback model at the dearest rate, and marks it", async () => {
+    const create = vi.fn().mockResolvedValue({ ...reply, model: "claude-mystery" });
+    await callClaude(prisma, ctx(), params, fakeClient(create));
+    const row = await prisma.aiUsage.findFirstOrThrow({ where: { orgId } });
+    expect(row.costUsd).toBeCloseTo((1_000 * 4 + 200 * 20 + 500 * 0.2) / 1e6, 10);
+    expect(row.error).toBe("unpriced model claude-mystery");
+  });
+
+  it("is switched off entirely by AI_MAX_CALLS_PER_DAY=0", async () => {
+    vi.stubEnv("AI_MAX_CALLS_PER_DAY", "0");
+    const create = vi.fn().mockResolvedValue(reply);
+    await expect(callClaude(prisma, ctx(), params, fakeClient(create))).rejects.toThrow(/switched off/);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("keeps the reserved cost of a call that timed out, since it may have been billed", async () => {
+    const create = vi.fn().mockRejectedValue(new Anthropic.APIConnectionTimeoutError());
+    await expect(callClaude(prisma, ctx(), params, fakeClient(create))).rejects.toThrow();
+    const row = await prisma.aiUsage.findFirstOrThrow({ where: { orgId } });
+    expect(row.costUsd).toBe(RESERVE_USD.file_analysis);
+    expect(row.finishedAt).not.toBeNull();
   });
 
   it("does not request fallbacks for models without them", async () => {
@@ -94,7 +127,41 @@ describe.skipIf(!TEST_DATABASE_URL)("callClaude and the daily cap (database)", (
     });
 
     const spend = (userId: string | null, costUsd: number, daysAgo = 0) =>
-      prisma.aiUsage.create({ data: { orgId, userId, purpose: "file_analysis", model: "m", costUsd, createdAt: new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000) } });
+      prisma.aiUsage.create({
+        data: { orgId, userId, purpose: "file_analysis", model: "m", costUsd, createdAt: new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000), finishedAt: new Date() },
+      });
+
+    it("reserves an estimate while a call runs, counts it against the caps, and allows one call at a time per person", async () => {
+      let finish!: (value: unknown) => void;
+      const create = vi.fn().mockReturnValueOnce(new Promise((resolve) => (finish = resolve))).mockResolvedValue(reply);
+      const first = callClaude(prisma, { ...ctx(), userId: sara }, params, fakeClient(create));
+      await vi.waitFor(async () => expect(await prisma.aiUsage.count({ where: { userId: sara, finishedAt: null } })).toBe(1));
+      expect((await prisma.aiUsage.findFirstOrThrow({ where: { userId: sara } })).costUsd).toBe(RESERVE_USD.file_analysis);
+
+      const second = await callClaude(prisma, { ...ctx(), userId: sara }, params, fakeClient(create)).catch((e: unknown) => e);
+      expect(second).toMatchObject({ reason: "user_busy" });
+      // The company as a whole is held to the estimate too: a $0.40 daily cap is already spoken for.
+      vi.stubEnv("AI_DAILY_USD", "0.4");
+      expect(await callClaude(prisma, { ...ctx(), userId: omar }, params, fakeClient(create)).catch((e: unknown) => e)).toMatchObject({ reason: "company_day" });
+      vi.stubEnv("AI_DAILY_USD", "10");
+
+      finish(reply);
+      await first;
+      const row = await prisma.aiUsage.findFirstOrThrow({ where: { userId: sara } });
+      expect(row.costUsd).toBeLessThan(0.01);
+      expect(row.finishedAt).not.toBeNull();
+      await expect(callClaude(prisma, { ...ctx(), userId: sara }, params, fakeClient(create))).resolves.toBeDefined();
+    });
+
+    it("holds every cap under the operator's ceiling, whatever an admin sets", async () => {
+      vi.stubEnv("AI_DAILY_USD_MAX", "0.03");
+      await expect(setCompanyLimits(prisma, { orgId, email: "admin@cap.example" }, { dailyUsd: 100, monthlyUsd: null })).rejects.toThrow(UserError);
+      await prisma.organization.update({ where: { id: orgId }, data: { aiDailyUsd: 5 } });
+      await spend(null, 0.04);
+      const create = vi.fn().mockResolvedValue(reply);
+      expect(await callClaude(prisma, ctx(), params, fakeClient(create)).catch((e: unknown) => e)).toMatchObject({ reason: "company_day", message: expect.stringContaining("$0.03") });
+      await prisma.organization.update({ where: { id: orgId }, data: { aiDailyUsd: null } });
+    });
 
     it("stops a person at their daily cap, naming it, while others continue", async () => {
       vi.stubEnv("AI_USER_DAILY_USD", "0.01");

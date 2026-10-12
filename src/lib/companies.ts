@@ -63,22 +63,25 @@ export async function companiesForUser(prisma: Db, user: { id: string; isOwner: 
   return memberships.map((m) => ({ ...m.org, role: m.role }));
 }
 
-/** The company and the user's effective role in it, or null when the user may not open it. */
+/** The company and the user's effective role in it, or null when the user may not open it (deactivation counts at once). */
 export async function companyAccess(prisma: Db, slug: string, user: { id: string; isOwner: boolean }) {
-  const org = await prisma.organization.findUnique({
-    where: { slug },
-    select: {
-      id: true,
-      slug: true,
-      name: true,
-      domain: true,
-      timezone: true,
-      logoUrl: true,
-      primaryColor: true,
-      memberships: { where: { userId: user.id }, select: { role: true } },
-    },
-  });
-  if (!org) return null;
+  const [org, account] = await Promise.all([
+    prisma.organization.findUnique({
+      where: { slug },
+      select: {
+        id: true,
+        slug: true,
+        name: true,
+        domain: true,
+        timezone: true,
+        logoUrl: true,
+        primaryColor: true,
+        memberships: { where: { userId: user.id }, select: { role: true } },
+      },
+    }),
+    prisma.appUser.findUnique({ where: { id: user.id }, select: { isActive: true } }),
+  ]);
+  if (!org || !account?.isActive) return null;
   const { memberships, ...company } = org;
   const role = effectiveRole(user.isOwner, memberships[0]?.role ?? null);
   return role ? { org: company, role } : null;

@@ -15,6 +15,10 @@ vi.mock("@/lib/storage", async (importOriginal) => {
     presignDownload: async (key: string) => `https://bucket.test/get/${key}`,
     head: async (key: string) => (stored.has(key) ? { sizeBytes: stored.get(key)!.length, contentType: null } : null),
     getObject: async (key: string) => stored.get(key) ?? null,
+    copy: async (from: string, to: string) => {
+      if (!stored.has(from)) throw new Error(`no object at ${from}`);
+      stored.set(to, stored.get(from)!);
+    },
     remove: async (key: string) => {
       stored.delete(key);
     },
@@ -66,7 +70,7 @@ describe.skipIf(!TEST_DATABASE_URL)("intake: AI reading, summary confirmation an
     const ctx = await ctxFor(who);
     const started = await files.startUpload(prisma, ctx, { name, size: content.length, mimeType: "application/pdf", sha256: sha(content), allowDuplicate: true });
     if (started.kind !== "upload") throw new Error("expected an upload");
-    stored.set(`${orgId}/${started.fileId}/${started.versionNo}`, new TextEncoder().encode(content));
+    stored.set(`${orgId}/${started.fileId}/${started.versionNo}.upload`, new TextEncoder().encode(content));
     const done = await files.confirmUpload(prisma, ctx, { fileId: started.fileId, versionNo: started.versionNo });
     expect(done.status).toBe("processing");
     return done.fileId;
@@ -203,6 +207,56 @@ describe.skipIf(!TEST_DATABASE_URL)("intake: AI reading, summary confirmation an
     await intake.retryRead(prisma, ctx, fileId);
     analyzeFile.mockResolvedValueOnce({ status: "not_read", reason: "ZIP files are stored but not read" });
     expect(await intake.readUpload(prisma, ctx, company, fileId)).toEqual({ status: "not_read", reason: "ZIP files are stored but not read", retryable: false });
+    await expect(intake.retryRead(prisma, ctx, fileId)).rejects.toThrow(/Only a read that failed/);
+  });
+
+  it("allows three attempts in all, and never a retry of a file the AI already read", async () => {
+    const fileId = await upload("sara", "stubborn.pdf", "stubborn");
+    const ctx = await ctxFor("sara");
+    for (let attempt = 1; attempt <= intake.MAX_READ_ATTEMPTS; attempt++) {
+      analyzeFile.mockRejectedValueOnce(new Error("overloaded"));
+      expect(await intake.readUpload(prisma, ctx, company, fileId)).toMatchObject({ status: "not_read", retryable: true });
+      if (attempt < intake.MAX_READ_ATTEMPTS) await intake.retryRead(prisma, ctx, fileId);
+    }
+    await expect(intake.retryRead(prisma, ctx, fileId)).rejects.toThrow(/tried 3 times/);
+
+    const readId = await upload("sara", "fine.pdf", "fine");
+    analyzeFile.mockResolvedValueOnce({ status: "analyzed", readStatus: "full", model: "m", analysis: analysis() });
+    expect(await intake.readUpload(prisma, ctx, company, readId)).toEqual({ status: "read" });
+    await expect(intake.retryRead(prisma, ctx, readId)).rejects.toThrow(/Only a read that failed/);
+    expect(analyzeFile).toHaveBeenCalledTimes(intake.MAX_READ_ATTEMPTS + 1);
+  });
+
+  it("keeps a file in line, without using an attempt, while another of the person's AI calls runs", async () => {
+    const fileId = await upload("admin", "second-of-two.pdf", "second of two");
+    const ctx = await ctxFor("admin");
+    analyzeFile.mockResolvedValueOnce({ status: "limit_reached", reason: "Wait for your current AI request to finish, then try again.", limit: "user_busy" });
+    expect(await intake.readUpload(prisma, ctx, company, fileId)).toEqual({ status: "busy" });
+    expect(await fileRow(fileId)).toMatchObject({ status: "processing", processingStartedAt: null, attempts: 0, aiError: null });
+    analyzeFile.mockResolvedValueOnce({ status: "analyzed", readStatus: "full", model: "m", analysis: analysis() });
+    expect(await intake.readUpload(prisma, ctx, company, fileId)).toEqual({ status: "read" });
+  });
+
+  it("does not read a stored object that no longer matches the upload", async () => {
+    const fileId = await upload("sara", "swapped.pdf", "original bytes");
+    stored.set(`${orgId}/${fileId}/1`, new TextEncoder().encode("something much longer put there later"));
+    expect(await intake.readUpload(prisma, await ctxFor("sara"), company, fileId)).toMatchObject({ status: "not_read", retryable: false, reason: expect.stringContaining("not the one that was uploaded") });
+    expect(analyzeFile).not.toHaveBeenCalled();
+  });
+
+  it("cuts the confirmed facts to the same sizes as the AI's", async () => {
+    const fileId = await upload("sara", "facts.pdf", "facts");
+    const ctx = await ctxFor("sara");
+    analyzeFile.mockRejectedValueOnce(new Error("x"));
+    await intake.readUpload(prisma, ctx, company, fileId);
+    const parties = Array.from({ length: 40 }, (_, i) => `Party ${i} ${"x".repeat(250)}`).join("\n");
+    await intake.confirmSummary(prisma, ctx, company, { ...intake.summaryToForm(await fileRow(fileId)), fileId, summary: "Short.", parties });
+    const facts = (await fileRow(fileId)).facts as { parties: string[] };
+    expect(facts.parties).toHaveLength(30);
+    expect(facts.parties[0]).toHaveLength(200);
+    await expect(
+      intake.confirmSummary(prisma, ctx, company, { ...intake.summaryToForm(await fileRow(fileId)), fileId, summary: "Short.", parties: "x".repeat(20_001) }),
+    ).rejects.toThrow(/too long/);
   });
 
   it("does not read files over the AI size limit, or when the AI is not set up", async () => {

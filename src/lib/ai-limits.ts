@@ -6,8 +6,9 @@ import { listMembers } from "@/lib/users";
 
 /**
  * How much the AI may cost, in USD. A company and each of its members have a daily and a monthly
- * cap; the environment gives the defaults and Usage lets admins override them. Spend is the sum of
- * recorded AiUsage costs, so a cap can be overshot by at most one call.
+ * cap; the environment gives the defaults and Usage lets admins override them, up to a ceiling
+ * only the environment can raise. Spend is the sum of recorded AiUsage costs, including the
+ * estimate reserved for each call still running, so a cap can be overshot by at most one call.
  */
 
 export type Limits = { dailyUsd: number; monthlyUsd: number };
@@ -16,8 +17,18 @@ type Overrides = { aiDailyUsd: number | null; aiMonthlyUsd: number | null };
 
 const money = (usd: number) => `$${usd.toFixed(2)}`;
 
+/** The most any cap may be; a stored override above it (from before the ceiling was lowered) is clamped. */
+export function ceilings(): Limits {
+  const env = limitsEnv();
+  return { dailyUsd: env.AI_DAILY_USD_MAX, monthlyUsd: env.AI_MONTHLY_USD_MAX };
+}
+
 function resolve(overrides: Overrides | null, defaults: Limits): Limits {
-  return { dailyUsd: overrides?.aiDailyUsd ?? defaults.dailyUsd, monthlyUsd: overrides?.aiMonthlyUsd ?? defaults.monthlyUsd };
+  const max = ceilings();
+  return {
+    dailyUsd: Math.min(overrides?.aiDailyUsd ?? defaults.dailyUsd, max.dailyUsd),
+    monthlyUsd: Math.min(overrides?.aiMonthlyUsd ?? defaults.monthlyUsd, max.monthlyUsd),
+  };
 }
 
 export function companyDefaults(): Limits {
@@ -35,7 +46,7 @@ async function spent(prisma: DbTx, where: { orgId: string; userId?: string }, si
   return sum._sum.costUsd ?? 0;
 }
 
-export type LimitReason = "user_day" | "user_month" | "company_day" | "company_month" | "company_calls";
+export type LimitReason = "user_day" | "user_month" | "company_day" | "company_month" | "company_calls" | "user_busy";
 
 export type BudgetCheck = { ok: true } | { ok: false; reason: LimitReason; message: string };
 
@@ -97,6 +108,8 @@ export type UsageRow = {
 export type UsageReport = {
   company: { overrides: Overrides; limits: Limits; today: Counts; month: Counts };
   defaults: { company: Limits; member: Limits };
+  /** The most a cap can be set to here. */
+  ceilings: Limits;
   people: UsageRow[];
 };
 
@@ -142,6 +155,7 @@ export async function usageReport(prisma: Db, org: { id: string; timezone: strin
   return {
     company: { overrides: orgRow, limits: resolve(orgRow, defaults.company), today: total(today.values()), month: total(month.values()) },
     defaults,
+    ceilings: ceilings(),
     people: members.map((m) => {
       const overrides = overridesByUser.get(m.userId) ?? null;
       return {
@@ -168,8 +182,14 @@ type Actor = { orgId: string; email: string };
 type NewLimits = { dailyUsd: number | null; monthlyUsd: number | null };
 
 function checkLimits(input: NewLimits): void {
-  for (const value of [input.dailyUsd, input.monthlyUsd]) {
-    if (value !== null && (!Number.isFinite(value) || value < 0 || value > 100_000)) throw new UserError("Enter a dollar amount from 0 to 100,000, or leave it empty for the default.");
+  const max = ceilings();
+  for (const [value, ceiling] of [
+    [input.dailyUsd, max.dailyUsd],
+    [input.monthlyUsd, max.monthlyUsd],
+  ] as const) {
+    if (value !== null && (!Number.isFinite(value) || value < 0 || value > ceiling)) {
+      throw new UserError(`Enter a dollar amount from 0 to ${ceiling.toLocaleString("en")}, or leave it empty for the default. Only the server's operator can raise the ceiling.`);
+    }
   }
 }
 

@@ -26,7 +26,9 @@ export function cleanFileName(raw: string): string {
     // eslint-disable-next-line no-control-regex -- stripping control characters is the point
     .replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, "")
     .replace(/\s+/g, " ")
-    .trim();
+    .trim()
+    // Windows drops trailing dots and spaces, so "setup.exe." would be saved as setup.exe.
+    .replace(/[. ]+$/, "");
   if (cleaned === "" || cleaned === "." || cleaned === "..") return "file";
   if (cleaned.length <= MAX_NAME_LENGTH) return cleaned;
   const ext = extensionOf(cleaned);
@@ -35,7 +37,9 @@ export function cleanFileName(raw: string): string {
 }
 
 export function isBlockedFile(name: string, mimeType: string): boolean {
-  if (BLOCKED_EXTENSIONS.has(extensionOf(name))) return true;
+  // By suffix rather than extensionOf(), so a file named just ".exe" is blocked too.
+  const lower = name.toLowerCase().replace(/[. ]+$/, "");
+  for (const ext of BLOCKED_EXTENSIONS) if (lower.endsWith(`.${ext}`)) return true;
   return /^application\/(x-msdownload|x-msdos-program|x-sh|x-executable|x-dosexec|vnd\.microsoft\.portable-executable)/i.test(mimeType);
 }
 

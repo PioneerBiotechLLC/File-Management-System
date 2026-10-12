@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { AiPurpose } from "@/generated/prisma/enums";
 import { checkBudget, type LimitReason } from "@/lib/ai-limits";
+import { FALLBACK_PRICE_MODEL, PRICES } from "@/lib/ai-prices";
 import type { Db } from "@/lib/db";
 import { aiEnv } from "@/lib/env";
 import { startOfDay } from "@/lib/time";
@@ -8,33 +9,25 @@ import { startOfDay } from "@/lib/time";
 type MessageParams = Anthropic.Beta.Messages.MessageCreateParamsNonStreaming;
 type Message = Anthropic.Beta.Messages.BetaMessage;
 
-/** USD per million tokens; cache writes at the 5-minute rate. */
-type Price = { input: number; cacheWrite: number; cacheRead: number; output: number };
-
 /**
- * From https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-10-11.
- * Claude Haiku 5.5 is priced higher when the prompt is over 100,000 tokens.
+ * Set aside against the dollar caps the moment a call starts, until its real cost replaces it.
+ * A file read is at most ~200k input tokens on Claude Sonnet 5.5; a search round is tiny.
  */
-const PRICES: Record<string, (promptTokens: number) => Price> = {
-  "claude-opus-5-5": () => ({ input: 4, cacheWrite: 5, cacheRead: 0.2, output: 20 }),
-  "claude-sonnet-5-5": () => ({ input: 2, cacheWrite: 2.5, cacheRead: 0.1, output: 10 }),
-  "claude-sonnet-5": () => ({ input: 2, cacheWrite: 2.5, cacheRead: 0.2, output: 10 }),
-  "claude-haiku-5-5": (prompt) =>
-    prompt > 100_000
-      ? { input: 0.5, cacheWrite: 0.625, cacheRead: 0.05, output: 2.5 }
-      : { input: 0.1, cacheWrite: 0.125, cacheRead: 0.01, output: 0.5 },
-  "claude-haiku-4-5": () => ({ input: 1, cacheWrite: 1.25, cacheRead: 0.1, output: 5 }),
-};
+export const RESERVE_USD: Record<AiPurpose, number> = { file_analysis: 0.5, file_search: 0.02 };
+
+/** A call with no result after this long no longer counts as in flight. */
+const IN_FLIGHT_MS = 3 * 60 * 1000;
 
 /** Models that accept `fallbacks: "default"`, which retries some safety declines on another model. */
 const SERVER_FALLBACK_MODELS = new Set(["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"]);
 
 type Tokens = { input: number; output: number; cacheRead: number; cacheWrite: number };
 
-/** Cost in USD, or null for a model missing from the price table. */
-export function costUsd(model: string, tokens: Tokens): number | null {
-  const price = PRICES[model];
-  if (!price) return null;
+export const isPriced = (model: string): boolean => model in PRICES;
+
+/** Cost in USD. A model missing from the price table is charged at the dearest known rate, never at $0. */
+export function costUsd(model: string, tokens: Tokens): number {
+  const price = PRICES[model] ?? PRICES[FALLBACK_PRICE_MODEL]!;
   const p = price(tokens.input + tokens.cacheRead + tokens.cacheWrite);
   return (
     (tokens.input * p.input + tokens.cacheWrite * p.cacheWrite + tokens.cacheRead * p.cacheRead + tokens.output * p.output) /
@@ -44,12 +37,10 @@ export function costUsd(model: string, tokens: Tokens): number | null {
 
 /**
  * Sums token counts and cost over every model that worked on the response: the requested model,
- * then any fallback model that took over after a decline.
+ * then any fallback model that took over after a decline. `unpriced` names models charged at
+ * the fallback rate because they are missing from the table.
  */
-export function usageOf(
-  message: Pick<Message, "model" | "usage">,
-  requestedModel: string,
-): Tokens & { costUsd: number | null } {
+export function usageOf(message: Pick<Message, "model" | "usage">, requestedModel: string): Tokens & { costUsd: number; unpriced: string[] } {
   const runs = (message.usage.iterations ?? []).flatMap((it) =>
     it.type === "message" || it.type === "fallback_message"
       ? [
@@ -72,17 +63,18 @@ export function usageOf(
       cacheWrite: message.usage.cache_creation_input_tokens ?? 0,
     });
   }
-  let cost: number | null = 0;
+  let cost = 0;
+  const unpriced: string[] = [];
   const total: Tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   for (const run of runs) {
     total.input += run.input;
     total.output += run.output;
     total.cacheRead += run.cacheRead;
     total.cacheWrite += run.cacheWrite;
-    const runCost = costUsd(run.model, run);
-    cost = cost === null || runCost === null ? null : cost + runCost;
+    cost += costUsd(run.model, run);
+    if (!isPriced(run.model) && !unpriced.includes(run.model)) unpriced.push(run.model);
   }
-  return { ...total, costUsd: cost };
+  return { ...total, costUsd: cost, unpriced };
 }
 
 /** A cap stopped the call. The message is written for the person who hit it. */
@@ -115,20 +107,30 @@ export type AiCallContext = {
 };
 
 /**
- * Reserves one call against the company's daily call cap and the dollar caps, and records it.
- * An advisory lock per company makes the checks and the insert atomic. Throws AiLimitError.
+ * Reserves one call against the company's daily call cap and the dollar caps, and records it
+ * with an estimated cost so that calls still running count. One call at a time per person. An
+ * advisory lock per company makes the checks and the insert atomic. Throws AiLimitError.
  */
 async function reserveCall(prisma: Db, ctx: AiCallContext, model: string, cap: number): Promise<string> {
+  if (cap <= 0) throw new AiLimitError("company_calls", "The AI is switched off on this server.");
+  // Fail closed: a model that cannot be priced cannot be charged against the caps.
+  if (!isPriced(model)) throw new Error(`No price is known for model ${model}; add it to ai-prices.ts`);
   const now = new Date();
   const since = startOfDay(now, ctx.timezone);
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`ai-cap:${ctx.orgId}`}))`;
     const used = await tx.aiUsage.count({ where: { orgId: ctx.orgId, createdAt: { gte: since } } });
     if (used >= cap) throw new AiLimitError("company_calls", `The company has reached its daily limit of ${cap} AI calls.`);
+    if (ctx.userId) {
+      const inFlight = await tx.aiUsage.count({
+        where: { orgId: ctx.orgId, userId: ctx.userId, finishedAt: null, createdAt: { gte: new Date(now.getTime() - IN_FLIGHT_MS) } },
+      });
+      if (inFlight > 0) throw new AiLimitError("user_busy", "Wait for your current AI request to finish, then try again.");
+    }
     const budget = await checkBudget(tx, ctx, now);
     if (!budget.ok) throw new AiLimitError(budget.reason, budget.message);
     const row = await tx.aiUsage.create({
-      data: { orgId: ctx.orgId, userId: ctx.userId ?? null, fileId: ctx.fileId ?? null, purpose: ctx.purpose, model },
+      data: { orgId: ctx.orgId, userId: ctx.userId ?? null, fileId: ctx.fileId ?? null, purpose: ctx.purpose, model, costUsd: RESERVE_USD[ctx.purpose] },
       select: { id: true },
     });
     return row.id;
@@ -155,7 +157,7 @@ export async function callClaude(
         : params,
     );
     const usage = usageOf(message, params.model);
-    if (usage.costUsd === null) console.warn(`[ai] no price for model ${message.model}; cost recorded as 0`);
+    if (usage.unpriced.length) console.warn(`[ai] no price for ${usage.unpriced.join(", ")}; charged at the ${FALLBACK_PRICE_MODEL} rate`);
     await prisma.aiUsage.update({
       where: { id: usageId },
       data: {
@@ -164,18 +166,23 @@ export async function callClaude(
         outputTokens: usage.output,
         cacheReadTokens: usage.cacheRead,
         cacheWriteTokens: usage.cacheWrite,
-        costUsd: usage.costUsd ?? 0,
+        costUsd: usage.costUsd,
+        finishedAt: new Date(),
         error:
           message.stop_reason === "refusal"
             ? `refused${message.stop_details?.category ? ` (${message.stop_details.category})` : ""}`
-            : null,
+            : usage.unpriced.length
+              ? `unpriced model ${usage.unpriced.join(", ")}`
+              : null,
       },
     });
     return message;
   } catch (error) {
+    // A timeout may still have been billed, so its reservation stands; other failures cost nothing.
+    const timedOut = error instanceof Anthropic.APIConnectionTimeoutError;
     await prisma.aiUsage.update({
       where: { id: usageId },
-      data: { error: (error instanceof Error ? error.message : String(error)).slice(0, 500) },
+      data: { error: (error instanceof Error ? error.message : String(error)).slice(0, 500), finishedAt: new Date(), ...(timedOut ? {} : { costUsd: 0 }) },
     });
     throw error;
   }

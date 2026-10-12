@@ -25,8 +25,9 @@ function refresh(slug: string) {
 
 const id = z.string().min(1);
 
-export async function startUploadAction(slug: string, input: files.StartUploadInput) {
-  return run(async () => files.startUpload(db(), await context(slug), input));
+/** Uploads from the web always go through Review; a folder cannot be chosen up front here. */
+export async function startUploadAction(slug: string, input: Omit<files.StartUploadInput, "folderId">) {
+  return run(async () => files.startUpload(db(), await context(slug), { ...input, folderId: null }));
 }
 
 export async function confirmUploadAction(slug: string, input: { fileId: string; versionNo: number }) {

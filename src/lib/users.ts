@@ -29,7 +29,8 @@ export async function addMember(
         data: { orgId: input.orgId, userEmail: input.actor.email, action: "user.create", targetType: "user", targetId: user.id, after: { email } },
       });
     } else if (!user.isActive) {
-      if (!input.reactivate) throw new UserError(`${email} is deactivated. An owner can reactivate them with "pnpm user add".`);
+      // Not "deactivated": that would tell an admin of one company about a person's standing in another.
+      if (!input.reactivate) throw new UserError(`${email} cannot be added from here. An owner can add them with "pnpm user add".`);
       await tx.appUser.update({ where: { id: user.id }, data: { isActive: true } });
       await tx.auditLog.create({
         data: { orgId: null, userEmail: input.actor.email, action: "user.reactivate", targetType: "user", targetId: user.id, after: { email } },
