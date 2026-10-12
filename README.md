@@ -2,7 +2,15 @@
 
 A company document manager. People upload a file; Claude reads it, writes a short summary, pulls out key facts and files it in the right folder. Anyone with access finds files by asking in plain English or Arabic.
 
-Built in four phases (see `prompt-file-manager.md`). **Phase 1 is in place:** Microsoft sign-in, companies, roles and users, the database schema, the storage module, and the logic that reads files and asks Claude to analyse and file them. Uploading, browsing and search arrive in phases 2 and 3; the full guide and deployment steps in phase 4.
+Built in four phases (see `prompt-file-manager.md`). **Phases 1 and 2 are in place, without AI:** Microsoft sign-in, companies, roles and users, and a complete manual filing system. Uploading, filing, browsing, versions and review all work by hand. The code that reads files with Claude and files them automatically (`src/lib/analysis.ts`, `ai.ts`, `filing.ts`) is written and tested but not wired in yet. Search comes in phase 3; operations and the full guide in phase 4.
+
+## How filing works
+
+1. **Upload** from any page: drag files onto it, or press Upload. Files go straight from the browser to the storage bucket; nothing passes through the app server.
+2. **Choose the folder first**, by opening it before uploading. A file uploaded with no folder open waits in **Review** until someone files it.
+3. **Open a file** to preview PDFs and images, edit its title, summary, type, date and tags, move it, rename it, add a new version, or delete it. Deleted files stay in **Deleted** for 30 days.
+4. **Identical files** are detected by content; you can open the existing one or upload anyway.
+5. **Admins** manage folders in Settings: create, rename, describe, nest, restrict, grant access, deactivate.
 
 ## Stack
 
@@ -17,7 +25,7 @@ Next.js 15 (App Router), React 19, TypeScript, Tailwind CSS 4 with shadcn/ui, Au
 | Editor | Upload; rename, move and delete their own uploads; accept filing suggestions |
 | Viewer | Browse, search and download |
 
-Restricted folders (HR and Finance / Bank by default) are visible only to admins, owners and people granted access.
+Restricted folders (HR and Finance / Bank by default) are visible only to admins, owners and people granted access. A file waiting in Review is visible only to whoever uploaded it, and to admins.
 
 ## Local development
 

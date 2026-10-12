@@ -225,14 +225,18 @@ model StoredFile {
   @@index([searchVector], type: Gin)
 }
 
+/// A version with versionNo above its file's currentVersion is an upload that has not been confirmed yet.
 model FileVersion {
-  id         String   @id @default(cuid())
-  fileId     String
-  versionNo  Int
-  sizeBytes  Int
-  sha256     String
-  uploadedBy String
-  createdAt  DateTime @default(now())
+  id           String   @id @default(cuid())
+  fileId       String
+  versionNo    Int
+  sizeBytes    Int
+  sha256       String
+  /// Null on rows created before versions recorded them; the file's own values apply then.
+  originalName String?
+  mimeType     String?
+  uploadedBy   String
+  createdAt    DateTime @default(now())
 
   file StoredFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
 
