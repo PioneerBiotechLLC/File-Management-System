@@ -16,6 +16,7 @@ export const ACTIONS = [
   "folder.manage",
   "user.manage",
   "settings.manage",
+  "log.view",
 ] as const;
 
 export type Action = (typeof ACTIONS)[number];
@@ -37,6 +38,7 @@ const MATRIX: Record<Action, Record<Role, Rule>> = {
   "folder.manage": { admin: "allow", editor: "deny", viewer: "deny" },
   "user.manage": { admin: "allow", editor: "deny", viewer: "deny" },
   "settings.manage": { admin: "allow", editor: "deny", viewer: "deny" },
+  "log.view": { admin: "allow", editor: "deny", viewer: "deny" },
 };
 
 export class ForbiddenError extends Error {

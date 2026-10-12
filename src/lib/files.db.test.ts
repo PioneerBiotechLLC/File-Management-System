@@ -258,7 +258,7 @@ describe.skipIf(!TEST_DATABASE_URL)("files and folders (database)", () => {
       }
     });
 
-    it("shows it to admins and to the granted user, and audits downloads from restricted folders", async () => {
+    it("shows it to admins and to the granted user, and audits every download", async () => {
       for (const who of ["admin", "hr"] as const) {
         const ctx = await ctxFor(who);
         expect((await files.listFiles(prisma, ctx)).items.map((f) => f.id)).toContain(secretId);
@@ -266,9 +266,10 @@ describe.skipIf(!TEST_DATABASE_URL)("files and folders (database)", () => {
       }
       await files.downloadTarget(prisma, await ctxFor("admin"), { fileId: secretId });
       const audit = await prisma.auditLog.findFirst({ where: { action: "file.download", targetId: secretId } });
-      expect(audit).toMatchObject({ userEmail: "admin@api-pharma.net" });
-      await files.downloadTarget(prisma, await ctxFor("sara"), { fileId: (await upload("sara", "plain.pdf", "plain doc", folder["Sales/Quotations"])).fileId });
-      expect(await prisma.auditLog.count({ where: { action: "file.download" } })).toBe(1);
+      expect(audit).toMatchObject({ userEmail: "admin@api-pharma.net", after: { name: "salary-review.pdf", versionNo: 1, current: true } });
+      const plainId = (await upload("sara", "plain.pdf", "plain doc", folder["Sales/Quotations"])).fileId;
+      await files.downloadTarget(prisma, await ctxFor("sara"), { fileId: plainId });
+      expect(await prisma.auditLog.findFirst({ where: { action: "file.download", targetId: plainId } })).toMatchObject({ userEmail: "sara@api-pharma.net" });
     });
 
     it("stops showing it as soon as the grant is revoked", async () => {

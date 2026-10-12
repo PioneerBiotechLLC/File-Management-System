@@ -32,7 +32,7 @@ export async function addMember(
       if (!input.reactivate) throw new UserError(`${email} is deactivated. An owner can reactivate them with "pnpm user add".`);
       await tx.appUser.update({ where: { id: user.id }, data: { isActive: true } });
       await tx.auditLog.create({
-        data: { orgId: null, userEmail: input.actor.email, action: "user.reactivate", targetType: "user", targetId: user.id },
+        data: { orgId: null, userEmail: input.actor.email, action: "user.reactivate", targetType: "user", targetId: user.id, after: { email } },
       });
     }
 

@@ -18,6 +18,7 @@ const EXPECTED: Record<Action, [admin: Expected, editor: Expected, viewer: Expec
   "folder.manage": ["yes", "no", "no"],
   "user.manage": ["yes", "no", "no"],
   "settings.manage": ["yes", "no", "no"],
+  "log.view": ["yes", "no", "no"],
 };
 
 describe("permission matrix", () => {

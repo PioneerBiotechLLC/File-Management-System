@@ -404,7 +404,7 @@ export async function getFile(prisma: Db, ctx: FileContext, fileId: string): Pro
 }
 
 /**
- * A short-lived URL for one version of a file. Downloads from restricted folders are audited.
+ * A short-lived URL for one version of a file. Every download and preview is audited.
  * `inline` is for the in-browser preview and only works for PDFs and common images.
  */
 export async function downloadTarget(
@@ -430,18 +430,16 @@ export async function downloadTarget(
   }
   if (input.inline && !previewKind(mimeType)) throw new UserError("This type of file cannot be previewed.");
 
-  if (file.folderId && ctx.restricted.has(file.folderId)) {
-    await prisma.auditLog.create({
-      data: {
-        orgId: ctx.orgId,
-        userEmail: ctx.email,
-        action: input.inline ? "file.preview" : "file.download",
-        targetType: "file",
-        targetId: file.id,
-        after: { versionNo, folderId: file.folderId },
-      },
-    });
-  }
+  await prisma.auditLog.create({
+    data: {
+      orgId: ctx.orgId,
+      userEmail: ctx.email,
+      action: input.inline ? "file.preview" : "file.download",
+      targetType: "file",
+      targetId: file.id,
+      after: { name, versionNo, current: versionNo === file.currentVersion, folderId: file.folderId },
+    },
+  });
   const url = await presignDownload(objectKey(ctx.orgId, file.id, versionNo), name, {
     inline: input.inline,
     contentType: input.inline ? mimeType : undefined,

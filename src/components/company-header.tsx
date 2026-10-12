@@ -42,7 +42,10 @@ export function CompanyHeader({
     nav.push({ href: `${base}/review`, label: "Review", active: pathname.startsWith(`${base}/review`), badge: reviewCount });
     nav.push({ href: `${base}/trash`, label: "Deleted", active: pathname.startsWith(`${base}/trash`) });
   }
-  if (canManage) nav.push({ href: `${base}/settings`, label: "Settings", active: pathname.startsWith(`${base}/settings`) });
+  if (canManage) {
+    nav.push({ href: `${base}/log`, label: "Log", active: pathname.startsWith(`${base}/log`) });
+    nav.push({ href: `${base}/settings`, label: "Settings", active: pathname.startsWith(`${base}/settings`) });
+  }
 
   return (
     <header className="border-b">

@@ -1,6 +1,7 @@
 import NextAuth, { type DefaultSession } from "next-auth";
 import type {} from "next-auth/jwt";
 import { SESSION_HOURS, authConfig } from "@/auth.config";
+import { recordRefusedSignIn, recordSession } from "@/lib/audit-log";
 import { db } from "@/lib/db";
 
 declare module "next-auth" {
@@ -22,6 +23,15 @@ declare module "next-auth/jwt" {
 const RELOAD_MS = 5 * 60 * 1000;
 const SESSION_MS = SESSION_HOURS * 60 * 60 * 1000;
 
+/** The log must never stop anyone signing in or out. */
+async function logQuietly(write: () => Promise<void>): Promise<void> {
+  try {
+    await write();
+  } catch (error) {
+    console.error("[auth] could not write the log", error);
+  }
+}
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
   callbacks: {
@@ -32,8 +42,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (!email) return "/no-access?reason=no_email";
       try {
         const row = await db().appUser.findUnique({ where: { email }, select: { isActive: true } });
-        if (!row) return "/no-access?reason=not_listed";
-        if (!row.isActive) return "/no-access?reason=inactive";
+        if (!row || !row.isActive) {
+          const reason = row ? "inactive" : "not_listed";
+          await logQuietly(() => recordRefusedSignIn(db(), email, reason));
+          return `/no-access?reason=${reason}`;
+        }
         return true;
       } catch (error) {
         console.error("[auth] sign-in check failed", error);
@@ -48,6 +61,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           data: { lastLoginAt: new Date(), ...(user.name ? { name: user.name } : {}) },
           select: { id: true, email: true, name: true, isOwner: true },
         });
+        await logQuietly(() => recordSession(db(), "auth.signin", row));
         return { ...token, userId: row.id, email: row.email, name: row.name, isOwner: row.isOwner, signedInAt: now, checkedAt: now };
       }
       // A session lasts 12 hours from sign-in, however active the user is.
@@ -67,6 +81,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       session.user.email = token.email ?? "";
       session.user.isOwner = token.isOwner === true;
       return session;
+    },
+  },
+  events: {
+    async signOut(message) {
+      const token = "token" in message ? message.token : null;
+      if (token?.userId && token.email) {
+        const user = { id: token.userId, email: token.email };
+        await logQuietly(() => recordSession(db(), "auth.signout", user));
+      }
     },
   },
 });
