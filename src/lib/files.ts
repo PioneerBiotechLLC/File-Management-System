@@ -125,6 +125,8 @@ const startInput = z.object({
   mimeType: z.string().max(300),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   folderId: z.string().min(1).nullish(),
+  /** The uploader's answer to "What is this file?"; ignored for new versions. */
+  docType: z.enum(DOC_TYPES).nullish(),
   /** Set to add a new version to this file instead of creating a file. */
   fileId: z.string().min(1).nullish(),
   allowDuplicate: z.boolean().optional(),
@@ -207,6 +209,7 @@ export async function startUpload(prisma: Db, ctx: FileContext, rawInput: StartU
       mimeType,
       sizeBytes: input.size,
       sha256: input.sha256,
+      docType: input.docType ?? null,
       status: "uploading",
       uploadedBy: ctx.userId,
       versions: { create: { versionNo: 1, sizeBytes: input.size, sha256: input.sha256, originalName: name, mimeType, uploadedBy: ctx.userId } },

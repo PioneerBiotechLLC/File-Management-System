@@ -6,15 +6,18 @@ import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { confirmUploadAction, startUploadAction } from "@/app/c/[slug]/actions";
 import { Button } from "@/components/ui/button";
+import { NativeSelect } from "@/components/ui/native-select";
+import type { DocType } from "@/lib/doc-types";
+import type { FileKind } from "@/lib/file-kinds";
 import { formatBytes, isBlockedFile } from "@/lib/file-names";
 
 /**
- * Uploads run in the browser: hash the file, ask the server for a one-time URL, PUT the bytes
- * straight to the bucket (never through a Vercel function), then confirm. Several files can run
- * at once, each with its own status.
+ * Uploads run in the browser. First the uploader says what each file is, which picks its folder
+ * and type. Then: hash the file, ask the server for a one-time URL, PUT the bytes straight to the
+ * bucket (never through a Vercel function), and confirm. Several files can run at once.
  */
 
-type Phase = "queued" | "hashing" | "uploading" | "finishing" | "filed" | "review" | "version" | "duplicate" | "failed";
+type Phase = "asking" | "queued" | "hashing" | "uploading" | "finishing" | "filed" | "review" | "version" | "duplicate" | "failed";
 
 type Item = {
   id: number;
@@ -25,14 +28,20 @@ type Item = {
   message?: string;
   fileId?: string;
   duplicate?: { id: string; name: string; folderPath: string | null };
-  job: { file: File; folderId: string | null; versionOf: string | null; allowDuplicate: boolean };
+  job: { file: File; folderId: string | null; docType: DocType | null; versionOf: string | null; allowDuplicate: boolean };
 };
+
+/** An answer to "What is this file?": `kind:<id>`, `folder:<id>` (empty id while choosing), or `review`. */
+type Answer = string;
+
+/** A folder the person can upload to, with its full path. */
+type UploadFolder = { id: string; path: string };
 
 type UploadOptions = { folderId?: string | null; versionOf?: string | null };
 
 type Uploads = {
   canUpload: boolean;
-  /** Opens the file picker; files go to the folder currently open. */
+  /** Opens the file picker; each file is then asked what it is, which decides its folder. */
   pick: () => void;
   uploadFiles: (files: File[], options?: UploadOptions) => void;
 };
@@ -70,15 +79,21 @@ export function UploadProvider({
   slug,
   canUpload,
   maxMb,
+  kinds,
+  folders,
   children,
 }: {
   slug: string;
   canUpload: boolean;
   maxMb: number;
+  /** The answers to "What is this file?" this person can use. */
+  kinds: FileKind[];
+  folders: UploadFolder[];
   children: React.ReactNode;
 }) {
   const router = useRouter();
   const [items, setItems] = useState<Item[]>([]);
+  const [answers, setAnswers] = useState<Record<number, Answer>>({});
   const [dragging, setDragging] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
   const nextId = useRef(1);
@@ -90,7 +105,7 @@ export function UploadProvider({
 
   const run = useCallback(
     async (item: Item) => {
-      const { file, folderId, versionOf, allowDuplicate } = item.job;
+      const { file, folderId, docType, versionOf, allowDuplicate } = item.job;
       const fail = (message: string) => update(item.id, { phase: "failed", message });
       try {
         update(item.id, { phase: "hashing", progress: 0, message: undefined });
@@ -101,6 +116,7 @@ export function UploadProvider({
           mimeType: file.type,
           sha256,
           folderId,
+          docType,
           fileId: versionOf,
           allowDuplicate,
         });
@@ -146,9 +162,10 @@ export function UploadProvider({
   const uploadFiles = useCallback(
     (list: File[], options: UploadOptions = {}) => {
       if (!canUpload) return;
-      // Uploads go to the folder open on the Files page, otherwise they wait in Review.
+      // The folder open on the Files page is the suggested answer.
       const here = new URL(window.location.href);
       const folderId = options.folderId !== undefined ? options.folderId : here.pathname === `/c/${slug}` ? here.searchParams.get("folder") : null;
+      const versionOf = options.versionOf ?? null;
       const added: Item[] = list.map((file) => {
         const id = nextId.current++;
         const problem = isBlockedFile(file.name, file.type)
@@ -162,17 +179,34 @@ export function UploadProvider({
           id,
           name: file.name,
           size: file.size,
-          phase: problem ? "failed" : "queued",
+          // A new version keeps its file's folder; a new file is asked what it is first.
+          phase: problem ? "failed" : versionOf ? "queued" : "asking",
           progress: 0,
           message: problem ?? undefined,
-          job: { file, folderId: folderId ?? null, versionOf: options.versionOf ?? null, allowDuplicate: false },
+          job: { file, folderId: folderId ?? null, docType: null, versionOf, allowDuplicate: false },
         };
       });
       for (const item of added) if (item.phase === "failed") started.current.add(item.id);
+      const suggested = suggestAnswer(kinds, folders, folderId ?? null);
+      setAnswers((prev) => ({ ...prev, ...Object.fromEntries(added.filter((i) => i.phase === "asking").map((i) => [i.id, suggested])) }));
       setItems((prev) => [...prev, ...added]);
     },
-    [canUpload, maxMb, slug],
+    [canUpload, maxMb, slug, kinds, folders],
   );
+
+  const asking = items.filter((i) => i.phase === "asking");
+
+  /** Applies each answer and starts the uploads. */
+  const startAsked = () => {
+    setItems((prev) =>
+      prev.map((i) => {
+        if (i.phase !== "asking") return i;
+        const target = resolveAnswer(kinds, answers[i.id] ?? "");
+        return target ? { ...i, phase: "queued", job: { ...i.job, ...target } } : i;
+      }),
+    );
+  };
+  const cancelAsked = () => setItems((prev) => prev.filter((i) => i.phase !== "asking"));
 
   const retry = (item: Item, allowDuplicate = false) => {
     started.current.delete(item.id);
@@ -250,7 +284,18 @@ export function UploadProvider({
           </div>
         </div>
       )}
-      {items.length > 0 && (
+      {asking.length > 0 && (
+        <AskDialog
+          items={asking}
+          kinds={kinds}
+          folders={folders}
+          answers={answers}
+          onAnswer={(id, answer) => setAnswers((prev) => ({ ...prev, [id]: answer }))}
+          onUpload={startAsked}
+          onCancel={cancelAsked}
+        />
+      )}
+      {items.some((i) => i.phase !== "asking") && (
         <div role="status" className="bg-card fixed right-4 bottom-4 z-40 w-96 max-w-[calc(100vw-2rem)] rounded-xl border shadow-lg">
           <div className="flex items-center justify-between border-b px-4 py-2 text-sm font-medium">
             Uploads
@@ -259,13 +304,15 @@ export function UploadProvider({
               size="icon"
               className="size-7"
               aria-label="Clear finished uploads"
-              onClick={() => setItems((prev) => prev.filter((i) => i.phase === "queued" || ACTIVE.includes(i.phase)))}
+              onClick={() => setItems((prev) => prev.filter((i) => i.phase === "asking" || i.phase === "queued" || ACTIVE.includes(i.phase)))}
             >
               <X />
             </Button>
           </div>
           <ul className="max-h-80 divide-y overflow-y-auto">
-            {items.map((item) => (
+            {items
+              .filter((i) => i.phase !== "asking")
+              .map((item) => (
               <UploadRow
                 key={item.id}
                 item={item}
@@ -384,5 +431,154 @@ function UploadRow({
         </div>
       )}
     </li>
+  );
+}
+
+/** The answer that matches the folder open when the files were added, if any. */
+function suggestAnswer(kinds: FileKind[], folders: UploadFolder[], folderId: string | null): Answer {
+  if (!folderId) return "";
+  const kind = kinds.find((k) => k.folderId === folderId);
+  if (kind) return `kind:${kind.id}`;
+  return folders.some((f) => f.id === folderId) ? `folder:${folderId}` : "";
+}
+
+/** Where an answer files the upload, or null while it is incomplete. */
+function resolveAnswer(kinds: FileKind[], answer: Answer): { folderId: string | null; docType: DocType | null } | null {
+  if (answer === "review") return { folderId: null, docType: null };
+  if (answer.startsWith("kind:")) {
+    const kind = kinds.find((k) => k.id === answer.slice(5));
+    return kind ? { folderId: kind.folderId, docType: kind.docType } : null;
+  }
+  if (answer.startsWith("folder:") && answer.length > 7) return { folderId: answer.slice(7), docType: null };
+  return null;
+}
+
+function AskDialog({
+  items,
+  kinds,
+  folders,
+  answers,
+  onAnswer,
+  onUpload,
+  onCancel,
+}: {
+  items: Item[];
+  kinds: FileKind[];
+  folders: UploadFolder[];
+  answers: Record<number, Answer>;
+  onAnswer: (id: number, answer: Answer) => void;
+  onUpload: () => void;
+  onCancel: () => void;
+}) {
+  const groups = [...new Set(kinds.map((k) => k.group))];
+  const ready = items.every((i) => resolveAnswer(kinds, answers[i.id] ?? "") !== null);
+  const first = answers[items[0]!.id] ?? "";
+
+  useEffect(() => {
+    const close = (e: KeyboardEvent) => e.key === "Escape" && onCancel();
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [onCancel]);
+
+  return (
+    <div className="bg-background/80 fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+      <form
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ask-title"
+        className="bg-card grid max-h-[calc(100dvh-2rem)] w-full max-w-xl grid-rows-[auto_1fr_auto] rounded-xl border shadow-lg"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (ready) onUpload();
+        }}
+      >
+        <div className="border-b px-5 py-4">
+          <h2 id="ask-title" className="font-semibold">
+            {items.length === 1 ? "What is this file?" : `What are these ${items.length} files?`}
+          </h2>
+          <p className="text-muted-foreground text-sm">
+            {items.length === 1 ? "Your answer decides which folder it is saved in." : "Your answers decide which folder each one is saved in."}
+          </p>
+        </div>
+
+        <ul className="divide-y overflow-y-auto">
+          {items.map((item, index) => {
+            const answer = answers[item.id] ?? "";
+            const choosingFolder = answer.startsWith("folder:");
+            return (
+              <li key={item.id} className="grid gap-2 px-5 py-3">
+                <div className="flex items-center gap-2 text-sm">
+                  <span dir="auto" className="min-w-0 flex-1 truncate font-medium" title={item.name}>
+                    {item.name}
+                  </span>
+                  <span className="text-muted-foreground shrink-0 text-xs">{formatBytes(item.size)}</span>
+                </div>
+                <NativeSelect
+                  aria-label={`What is ${item.name}?`}
+                  autoFocus={index === 0}
+                  value={choosingFolder ? "folder:" : answer}
+                  onChange={(e) => onAnswer(item.id, e.target.value)}
+                  className="w-full"
+                >
+                  <option value="" disabled>
+                    Choose what it is…
+                  </option>
+                  {groups.map((group) => (
+                    <optgroup key={group} label={group}>
+                      {kinds
+                        .filter((k) => k.group === group)
+                        .map((k) => (
+                          <option key={k.id} value={`kind:${k.id}`}>
+                            {k.label}
+                          </option>
+                        ))}
+                    </optgroup>
+                  ))}
+                  <optgroup label="Not listed">
+                    {folders.length > 0 && <option value="folder:">Choose a folder myself…</option>}
+                    <option value="review">Not sure — leave it in Review</option>
+                  </optgroup>
+                </NativeSelect>
+                {choosingFolder && (
+                  <NativeSelect
+                    aria-label={`Folder for ${item.name}`}
+                    value={answer.slice(7)}
+                    onChange={(e) => onAnswer(item.id, `folder:${e.target.value}`)}
+                    className="w-full"
+                  >
+                    <option value="" disabled>
+                      Choose a folder…
+                    </option>
+                    {folders.map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {f.path}
+                      </option>
+                    ))}
+                  </NativeSelect>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t px-5 py-3">
+          {items.length > 1 && resolveAnswer(kinds, first) ? (
+            <Button type="button" variant="ghost" size="sm" onClick={() => items.forEach((i) => onAnswer(i.id, first))}>
+              Use the first answer for all
+            </Button>
+          ) : (
+            <span />
+          )}
+          <div className="flex gap-2">
+            <Button type="button" variant="ghost" onClick={onCancel}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={!ready}>
+              {items.length === 1 ? "Upload" : `Upload ${items.length} files`}
+            </Button>
+          </div>
+        </div>
+      </form>
+    </div>
   );
 }

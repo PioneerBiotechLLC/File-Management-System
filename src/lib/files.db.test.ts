@@ -87,6 +87,7 @@ describe.skipIf(!TEST_DATABASE_URL)("files and folders (database)", () => {
         mimeType: "application/pdf",
         sha256: sha("quotation 1"),
         folderId: folder["Sales/Quotations"],
+        docType: "quotation",
       });
       expect(started).toMatchObject({ kind: "upload", versionNo: 1, name: "QT-2291.pdf", contentType: "application/pdf" });
       if (started.kind !== "upload") return;
@@ -101,7 +102,7 @@ describe.skipIf(!TEST_DATABASE_URL)("files and folders (database)", () => {
       expect(done).toMatchObject({ status: "ready", folderPath: "Sales / Quotations", name: "QT-2291.pdf" });
 
       const detail = await files.getFile(prisma, ctx, started.fileId);
-      expect(detail).toMatchObject({ status: "ready", filedBy: "sara@api-pharma.net", currentVersion: 1, folderPath: "Sales / Quotations" });
+      expect(detail).toMatchObject({ status: "ready", filedBy: "sara@api-pharma.net", currentVersion: 1, folderPath: "Sales / Quotations", docType: "quotation" });
       expect(detail?.versions).toHaveLength(1);
       expect(await prisma.auditLog.count({ where: { orgId, action: "file.upload", targetId: started.fileId } })).toBe(1);
 

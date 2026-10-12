@@ -2,15 +2,16 @@
 
 A company document manager. People upload a file; Claude reads it, writes a short summary, pulls out key facts and files it in the right folder. Anyone with access finds files by asking in plain English or Arabic.
 
-Built in four phases (see `prompt-file-manager.md`). **Phases 1 and 2 are in place, without AI:** Microsoft sign-in, companies, roles and users, and a complete manual filing system. Uploading, filing, browsing, versions and review all work by hand. The code that reads files with Claude and files them automatically (`src/lib/analysis.ts`, `ai.ts`, `filing.ts`) is written and tested but not wired in yet. Search comes in phase 3; operations and the full guide in phase 4.
+Built in four phases (see `prompt-file-manager.md`). **Phases 1 and 2 are in place, without AI, plus an activity log:** Microsoft sign-in, companies, roles and users, and a complete manual filing system. Uploading, filing, browsing, versions and review all work by hand. The code that reads files with Claude and files them automatically (`src/lib/analysis.ts`, `ai.ts`, `filing.ts`) is written and tested but not wired in yet. Search comes in phase 3; operations and the full guide in phase 4.
 
 ## How filing works
 
 1. **Upload** from any page: drag files onto it, or press Upload. Files go straight from the browser to the storage bucket; nothing passes through the app server.
-2. **Choose the folder first**, by opening it before uploading. A file uploaded with no folder open waits in **Review** until someone files it.
+2. **Say what it is.** Each file asks "What is this file?" with a dropdown (a quotation from a supplier, a COA, an employment contract…). The answer picks the folder and the document type; the list comes from `src/lib/file-kinds.ts`. You can also choose a folder yourself, or answer "Not sure" to leave it in **Review** for someone to file. The folder open when you upload is the suggested answer.
 3. **Open a file** to preview PDFs and images, edit its title, summary, type, date and tags, move it, rename it, add a new version, or delete it. Deleted files stay in **Deleted** for 30 days.
 4. **Identical files** are detected by content; you can open the existing one or upload anyway.
 5. **Admins** manage folders in Settings: create, rename, describe, nest, restrict, grant access, deactivate.
+6. **Log** (admins): every sign-in, upload, download, view, move, rename, delete and setting change, with the email of who did it.
 
 ## Stack
 
