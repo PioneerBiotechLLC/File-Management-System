@@ -284,6 +284,23 @@ export function folderAccess(
   return { visible, writable };
 }
 
+/** Folders that are restricted themselves or sit under a restricted folder. */
+export function restrictedFolderIds(folders: Pick<FolderNode, "id" | "parentId" | "access">[]): Set<string> {
+  const byId = new Map(folders.map((f) => [f.id, f]));
+  const restricted = new Set<string>();
+  for (const folder of folders) {
+    const seen = new Set<string>();
+    for (let f: typeof folder | undefined = folder; f && !seen.has(f.id); f = f.parentId ? byId.get(f.parentId) : undefined) {
+      seen.add(f.id);
+      if (f.access === "restricted") {
+        restricted.add(folder.id);
+        break;
+      }
+    }
+  }
+  return restricted;
+}
+
 /** "Sales / Quotations" for every folder, in the folder's English names. */
 export function folderPaths(folders: Pick<FolderNode, "id" | "parentId" | "name">[]): Map<string, string> {
   const byId = new Map(folders.map((f) => [f.id, f]));

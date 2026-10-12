@@ -1,25 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { AiLimitError, anthropic, callClaude, type AiCallContext } from "@/lib/ai";
+import { DOC_TYPES } from "@/lib/doc-types";
 import type { Db } from "@/lib/db";
 import { SEARCH_TEXT_MAX_CHARS, type Extraction } from "@/lib/extract";
 
 type MessageParams = Anthropic.Beta.Messages.MessageCreateParamsNonStreaming;
 type Tool = Anthropic.Beta.Messages.BetaTool;
-
-const DOC_TYPES = [
-  "quotation",
-  "purchase_order",
-  "invoice",
-  "coa",
-  "contract",
-  "certificate",
-  "report",
-  "letter",
-  "specification",
-  "price_list",
-  "other",
-] as const;
 
 const LANGUAGES = ["en", "ar", "mixed", "other"] as const;
 

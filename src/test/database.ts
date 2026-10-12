@@ -32,6 +32,8 @@ export async function freshDatabase(): Promise<{ prisma: PrismaClient; schema: s
   for (const name of migrationNames()) {
     await admin.query(readFileSync(join(MIGRATIONS, name, "migration.sql"), "utf8"));
   }
+  // Prisma's local dev server shares session settings between connections, so never leave this set.
+  await admin.query("SET search_path TO public");
   // One connection: Prisma's local dev server (PGlite) breaks when connections interleave.
   const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: TEST_DATABASE_URL, max: 1 }, { schema }) });
   return {

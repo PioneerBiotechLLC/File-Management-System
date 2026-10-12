@@ -22,15 +22,26 @@ export function CompanyHeader({
   companies,
   user,
   canManage,
+  canReview,
+  reviewCount,
 }: {
   company: Company & { logoUrl: string | null };
   companies: Company[];
   user: { email: string; name: string | null };
   canManage: boolean;
+  /** Editors and admins see Review and Deleted. */
+  canReview: boolean;
+  reviewCount: number;
 }) {
   const pathname = usePathname();
   const base = `/c/${company.slug}`;
-  const nav = [{ href: base, label: "Files", active: pathname === base }];
+  const nav: { href: string; label: string; active: boolean; badge?: number }[] = [
+    { href: base, label: "Files", active: pathname === base || pathname.startsWith(`${base}/files`) },
+  ];
+  if (canReview) {
+    nav.push({ href: `${base}/review`, label: "Review", active: pathname.startsWith(`${base}/review`), badge: reviewCount });
+    nav.push({ href: `${base}/trash`, label: "Deleted", active: pathname.startsWith(`${base}/trash`) });
+  }
   if (canManage) nav.push({ href: `${base}/settings`, label: "Settings", active: pathname.startsWith(`${base}/settings`) });
 
   return (
@@ -76,6 +87,11 @@ export function CompanyHeader({
               )}
             >
               {item.label}
+              {item.badge ? (
+                <span className="bg-brand ml-1.5 rounded-full px-1.5 py-0.5 text-xs font-medium text-white" aria-label={`${item.badge} waiting`}>
+                  {item.badge}
+                </span>
+              ) : null}
             </Link>
           ))}
         </nav>
