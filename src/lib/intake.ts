@@ -1,0 +1,349 @@
+import { z } from "zod";
+import { analyzeFile, factsInput, storedFacts, type Facts } from "@/lib/analysis";
+import type { Prisma } from "@/generated/prisma/client";
+import type { Db } from "@/lib/db";
+import { DOC_TYPES, type DocType } from "@/lib/doc-types";
+import { aiEnv, limitsEnv } from "@/lib/env";
+import { UserError } from "@/lib/errors";
+import { extract } from "@/lib/extract";
+import type { FileContext } from "@/lib/files";
+import { suggestFolder, summaryChanged, type ConfirmedSummary } from "@/lib/filing";
+import { can } from "@/lib/permissions";
+import { getObject, objectKey } from "@/lib/storage";
+
+/**
+ * What happens to a new upload after its bytes arrive:
+ * 1. the AI reads it and drafts a summary (or says why it could not);
+ * 2. the uploader checks the draft, or writes the summary, and confirms it;
+ * 3. the AI suggests a folder from the confirmed summary; the uploader confirms it (files.moveFile).
+ * A file waits in Review until steps 2 and 3 are done, however long that takes.
+ */
+
+/** A read that has run longer than this is taken as dead; the uploader may try again. */
+export const READ_TIMEOUT_MS = 2 * 60 * 1000;
+
+type Company = { name: string; domain: string; timezone: string };
+
+export type ReadOutcome =
+  | { status: "read" }
+  /** `retryable` when the cause was a failure or a cap, not the file itself. */
+  | { status: "not_read"; reason: string; retryable: boolean }
+  /** Another request is reading it right now. */
+  | { status: "busy" };
+
+const notWaiting = () => new UserError("That file is not waiting to be filed.");
+
+/** The unfiled files this user may work on in Review: their own, or everyone's for admins. */
+function waitingWhere(ctx: FileContext, fileId: string): Prisma.StoredFileWhereInput {
+  return {
+    id: fileId,
+    orgId: ctx.orgId,
+    deletedAt: null,
+    folderId: null,
+    status: { in: ["processing", "needs_review"] },
+    ...(ctx.role === "admin" ? {} : { uploadedBy: ctx.userId }),
+  };
+}
+
+function aiConfigured(): boolean {
+  const { ANTHROPIC_API_KEY } = process.env;
+  return Boolean(ANTHROPIC_API_KEY?.trim());
+}
+
+/** Active folders the user may file into, as the model sees them. */
+function folderChoices(ctx: FileContext) {
+  return ctx.folders
+    .filter((f) => f.isActive && ctx.writable.has(f.id))
+    .map((f) => ({ id: f.id, path: ctx.paths.get(f.id) ?? f.name, description: f.description }));
+}
+
+/**
+ * Reads one freshly uploaded file with the AI and stores the draft on the file. Safe to call
+ * again: a finished file reports its state, and a read in progress reports `busy`.
+ */
+export async function readUpload(prisma: Db, ctx: FileContext, company: Company, fileId: string): Promise<ReadOutcome> {
+  if (!can(ctx.role, "review.accept")) throw notWaiting();
+  const file = await prisma.storedFile.findFirst({
+    where: waitingWhere(ctx, fileId),
+    select: { id: true, name: true, originalName: true, mimeType: true, sizeBytes: true, currentVersion: true, status: true, readStatus: true, aiError: true, createdAt: true },
+  });
+  if (!file) throw notWaiting();
+  if (file.status !== "processing") {
+    return file.aiError ? { status: "not_read", reason: file.aiError, retryable: file.readStatus === null } : { status: "read" };
+  }
+
+  // Take the file; a read older than the timeout is assumed dead.
+  const startedAt = new Date();
+  const locked = await prisma.storedFile.updateMany({
+    where: { id: file.id, status: "processing", OR: [{ processingStartedAt: null }, { processingStartedAt: { lt: new Date(startedAt.getTime() - READ_TIMEOUT_MS) } }] },
+    data: { processingStartedAt: startedAt, attempts: { increment: 1 }, aiError: null },
+  });
+  if (locked.count === 0) return { status: "busy" };
+
+  const finish = async (data: Prisma.StoredFileUncheckedUpdateInput, log: Record<string, unknown>) => {
+    await prisma.$transaction([
+      prisma.storedFile.update({ where: { id: file.id }, data: { ...data, status: "needs_review", processingStartedAt: null } }),
+      prisma.auditLog.create({
+        data: { orgId: ctx.orgId, userEmail: ctx.email, action: "file.analyze", targetType: "file", targetId: file.id, after: { name: file.name, ...log } },
+      }),
+    ]);
+  };
+  const notRead = async (reason: string, retryable: boolean): Promise<ReadOutcome> => {
+    await finish({ readStatus: retryable ? null : "not_read", aiError: reason }, { outcome: retryable ? "failed" : "not_read", reason });
+    return { status: "not_read", reason, retryable };
+  };
+
+  if (!aiConfigured()) return notRead("AI reading is not set up on this server.", false);
+  const maxMb = limitsEnv().FILES_AI_MAX_MB;
+  if (file.sizeBytes > maxMb * 1024 * 1024) return notRead(`The file is larger than ${maxMb} MB, the most the AI reads.`, false);
+
+  const bytes = await getObject(objectKey(ctx.orgId, file.id, file.currentVersion));
+  if (!bytes) return notRead("The file was not found in storage.", true);
+
+  let outcome;
+  try {
+    const extraction = await extract(bytes, file.originalName, file.mimeType);
+    outcome = await analyzeFile(
+      prisma,
+      { orgId: ctx.orgId, timezone: company.timezone, userId: ctx.userId, fileId: file.id },
+      { model: aiEnv().ANTHROPIC_MODEL, company, folders: folderChoices(ctx), fileName: file.originalName, uploadedAt: file.createdAt, extraction },
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return notRead(`AI reading failed: ${message.slice(0, 200)}`, true);
+  }
+
+  if (outcome.status === "limit_reached") return notRead(outcome.reason, true);
+  if (outcome.status === "not_read") return notRead(outcome.reason, false);
+  const { analysis } = outcome;
+  if (!analysis.readable) return notRead(analysis.problem ?? "The AI could not read this document clearly.", false);
+
+  const usage = await prisma.aiUsage.findFirst({
+    where: { fileId: file.id, purpose: "file_analysis", createdAt: { gte: startedAt } },
+    orderBy: { createdAt: "desc" },
+    select: { costUsd: true },
+  });
+  await finish(
+    {
+      title: analysis.title,
+      summary: analysis.summary,
+      docType: analysis.docType,
+      docDate: analysis.docDate,
+      language: analysis.language,
+      facts: analysis.facts,
+      tags: analysis.tags,
+      suggestedFolderId: analysis.filing.folderId || null,
+      filingConfidence: analysis.filing.folderId ? analysis.filing.confidence : null,
+      filingReason: analysis.filing.folderId ? analysis.filing.reason : null,
+      aiModel: outcome.model,
+      readStatus: outcome.readStatus,
+      aiError: null,
+    },
+    { outcome: "read", model: outcome.model, costUsd: usage?.costUsd ?? null },
+  );
+  return { status: "read" };
+}
+
+/** Puts a file whose read failed back in line for the AI. */
+export async function retryRead(prisma: Db, ctx: FileContext, fileId: string): Promise<void> {
+  if (!can(ctx.role, "review.accept")) throw notWaiting();
+  const file = await prisma.storedFile.findFirst({ where: waitingWhere(ctx, fileId), select: { id: true, summaryConfirmedAt: true } });
+  if (!file) throw notWaiting();
+  if (file.summaryConfirmedAt) throw new UserError("The summary is already confirmed.");
+  await prisma.storedFile.update({ where: { id: file.id }, data: { status: "processing", processingStartedAt: null, aiError: null, readStatus: null } });
+}
+
+// ---------------------------------------------------------------------------------------------
+// The summary form
+// ---------------------------------------------------------------------------------------------
+
+const clean = (parts: string[]) => parts.map((s) => s.trim().replace(/\s+/g, " ")).filter(Boolean);
+
+/** Tags and amounts: commas, Arabic commas, semicolons or new lines. */
+const splitList = (raw: string) => clean(raw.split(/[,،;\n]/));
+
+/**
+ * Names and products: one per line (or semicolons). Commas stay inside an item, so
+ * "Insulin glargine 100 IU/ml, 3 ml pen" survives a round trip through the form.
+ */
+const splitLines = (raw: string) => clean(raw.split(/[;\n]/));
+
+const dateField = z
+  .string()
+  .trim()
+  .transform((v, c) => {
+    if (v === "") return null;
+    const date = new Date(`${v}T00:00:00.000Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== v) {
+      c.addIssue({ code: "custom", message: "Enter dates as YYYY-MM-DD." });
+      return z.NEVER;
+    }
+    return date;
+  });
+
+/** "1,250.50 AED" or "AED 1250.5", one per line or comma. */
+const AMOUNT = /^(?:([A-Za-z]{3})\s*)?(\d+(?:\.\d+)?)(?:\s*([A-Za-z]{3}))?$/;
+
+const amountsField = z.string().transform((raw, c) => {
+  const out: { value: number; currency: string }[] = [];
+  // Thousands separators ("1,250.50") are not list separators.
+  for (const part of splitList(raw.replace(/(?<=\d),(?=\d{3}(?!\d))/g, ""))) {
+    const m = part.match(AMOUNT);
+    const currency = m?.[1] ?? m?.[3];
+    const value = m ? Number(m[2]) : NaN;
+    if (!m || !currency || !Number.isFinite(value)) {
+      c.addIssue({ code: "custom", message: `Enter amounts as 1250.50 AED, separated by commas (could not read “${part}”).` });
+      return z.NEVER;
+    }
+    out.push({ value, currency: currency.toUpperCase() });
+  }
+  return out;
+});
+
+/** "quotation QT-2291" or just "QT-2291", one per line. */
+const referencesField = z.string().transform((raw) =>
+  splitLines(raw).map((part) => {
+    const space = part.indexOf(" ");
+    return space > 0 && space < part.length - 1
+      ? { kind: part.slice(0, space).toLowerCase().replaceAll(" ", "_"), value: part.slice(space + 1).trim() }
+      : { kind: "reference", value: part };
+  }),
+);
+
+const tagsField = z.string().transform((raw) => {
+  const tags: string[] = [];
+  for (const part of splitList(raw)) {
+    const tag = part.toLowerCase().slice(0, 40);
+    if (!tags.includes(tag)) tags.push(tag);
+  }
+  return tags.slice(0, 20);
+});
+
+const summaryForm = z.object({
+  title: z.string().trim().max(200).transform((v) => v || null),
+  summary: z.string().trim().min(1, "Write a short summary of the document.").max(2_000),
+  docType: z.union([z.enum(DOC_TYPES), z.literal("")]).transform((v) => v || null),
+  docDate: dateField,
+  parties: z.string().transform(splitLines),
+  references: referencesField,
+  amounts: amountsField,
+  products: z.string().transform(splitLines),
+  expiryDate: dateField,
+  tags: tagsField,
+});
+
+export type SummaryFormInput = z.input<typeof summaryForm>;
+
+/** The stored summary as form text, so the uploader edits exactly what will be saved. */
+export function summaryToForm(file: {
+  title: string | null;
+  summary: string | null;
+  docType: string | null;
+  docDate: Date | null;
+  facts: unknown;
+  tags: string[];
+}): SummaryFormInput {
+  const facts = factsOf(file.facts);
+  return {
+    title: file.title ?? "",
+    summary: file.summary ?? "",
+    docType: (DOC_TYPES as readonly string[]).includes(file.docType ?? "") ? (file.docType as DocType) : "",
+    docDate: file.docDate?.toISOString().slice(0, 10) ?? "",
+    parties: facts.parties.join("\n"),
+    references: facts.references.map((r) => (r.kind === "reference" ? r.value : `${r.kind} ${r.value}`)).join("\n"),
+    amounts: facts.amounts.map((a) => `${a.value} ${a.currency}`).join(", "),
+    products: facts.products.join("\n"),
+    expiryDate: facts.expiryDate ?? "",
+    tags: file.tags.join(", "),
+  };
+}
+
+/** Whatever is in the JSON column, as well-formed facts. */
+export function factsOf(value: unknown): Facts {
+  const parsed = factsInput.safeParse({ parties: [], references: [], amounts: [], products: [], expiryDate: null, ...(value && typeof value === "object" ? value : {}) });
+  return parsed.success ? storedFacts(parsed.data) : { parties: [], references: [], amounts: [], products: [] };
+}
+
+export type FolderSuggestion = { folderId: string; path: string; confidence: number; reason: string };
+
+/**
+ * Saves the summary the uploader confirmed and returns the folder the AI suggests for it. The
+ * suggestion made while reading is reused when nothing was changed; otherwise the cheaper model
+ * chooses again from the confirmed text. No suggestion is not an error: the uploader picks.
+ */
+export async function confirmSummary(
+  prisma: Db,
+  ctx: FileContext,
+  company: Company,
+  input: { fileId: string } & SummaryFormInput,
+): Promise<{ suggestion: FolderSuggestion | null }> {
+  if (!can(ctx.role, "review.accept")) throw notWaiting();
+  const file = await prisma.storedFile.findFirst({
+    where: waitingWhere(ctx, input.fileId),
+    select: {
+      id: true,
+      name: true,
+      title: true,
+      summary: true,
+      docType: true,
+      docDate: true,
+      facts: true,
+      tags: true,
+      readStatus: true,
+      aiModel: true,
+      suggestedFolderId: true,
+      filingConfidence: true,
+      filingReason: true,
+    },
+  });
+  if (!file) throw notWaiting();
+  const parsed = summaryForm.safeParse(input);
+  if (!parsed.success) throw new UserError(parsed.error.issues[0]?.message ?? "Check the summary and try again.");
+  const { tags, parties, references, amounts, products, expiryDate, ...rest } = parsed.data;
+  const facts = storedFacts({ parties, references, amounts, products, expiryDate });
+  const confirmed: ConfirmedSummary = { ...rest, docType: rest.docType as DocType | null, facts };
+
+  const aiRead = file.readStatus === "full" || file.readStatus === "partial";
+  const draft: ConfirmedSummary = {
+    title: file.title,
+    summary: file.summary,
+    docType: (file.docType as DocType | null) ?? null,
+    docDate: file.docDate,
+    facts: factsOf(file.facts),
+  };
+  const edited = !aiRead || summaryChanged(draft, confirmed);
+  const now = new Date();
+  await prisma.$transaction([
+    prisma.storedFile.update({
+      where: { id: file.id },
+      data: { ...confirmed, facts, tags, status: "needs_review", processingStartedAt: null, summaryConfirmedAt: now, summaryConfirmedBy: ctx.email },
+    }),
+    prisma.auditLog.create({
+      data: {
+        orgId: ctx.orgId,
+        userEmail: ctx.email,
+        action: "file.summary",
+        targetType: "file",
+        targetId: file.id,
+        after: { name: file.name, source: aiRead ? "ai" : "manual", edited: aiRead && edited, title: confirmed.title, summary: confirmed.summary },
+      },
+    }),
+  ]);
+
+  let filing: { folderId: string; confidence: number; reason: string } | null = null;
+  if (!edited && file.suggestedFolderId && ctx.writable.has(file.suggestedFolderId)) {
+    filing = { folderId: file.suggestedFolderId, confidence: file.filingConfidence ?? 0, reason: file.filingReason ?? "" };
+  } else if (aiConfigured()) {
+    const chosen = await suggestFolder(
+      prisma,
+      { orgId: ctx.orgId, timezone: company.timezone, userId: ctx.userId, fileId: file.id },
+      { model: aiEnv().ANTHROPIC_MODEL_LIGHT, company, folders: folderChoices(ctx), summary: confirmed },
+    );
+    filing = chosen?.folderId ? { folderId: chosen.folderId, confidence: chosen.confidence, reason: chosen.reason } : null;
+    await prisma.storedFile.update({
+      where: { id: file.id },
+      data: { suggestedFolderId: filing?.folderId ?? null, filingConfidence: filing?.confidence ?? null, filingReason: filing?.reason ?? null },
+    });
+  }
+  return { suggestion: filing ? { ...filing, path: ctx.paths.get(filing.folderId) ?? "" } : null };
+}

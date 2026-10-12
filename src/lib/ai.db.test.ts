@@ -32,6 +32,7 @@ describe.skipIf(!TEST_DATABASE_URL)("callClaude and the daily cap (database)", (
   afterAll(async () => drop?.());
 
   beforeEach(async () => {
+    vi.unstubAllEnvs();
     vi.stubEnv("ANTHROPIC_API_KEY", "test-key");
     vi.stubEnv("AI_MAX_CALLS_PER_DAY", "3");
     await prisma.aiUsage.deleteMany();
@@ -79,5 +80,52 @@ describe.skipIf(!TEST_DATABASE_URL)("callClaude and the daily cap (database)", (
     const create = vi.fn().mockResolvedValue({ ...reply, stop_reason: "refusal", stop_details: { category: "bio" } });
     await callClaude(prisma, ctx(), params, fakeClient(create));
     expect((await prisma.aiUsage.findFirstOrThrow({ where: { orgId } })).error).toBe("refused (bio)");
+  });
+
+  describe("dollar caps", () => {
+    let sara: string;
+    let omar: string;
+
+    beforeAll(async () => {
+      sara = (await prisma.appUser.create({ data: { email: "sara@cap.example" } })).id;
+      omar = (await prisma.appUser.create({ data: { email: "omar@cap.example" } })).id;
+      await prisma.membership.create({ data: { userId: sara, orgId, role: "editor" } });
+      await prisma.membership.create({ data: { userId: omar, orgId, role: "editor", aiDailyUsd: 1 } });
+    });
+
+    const spend = (userId: string | null, costUsd: number, daysAgo = 0) =>
+      prisma.aiUsage.create({ data: { orgId, userId, purpose: "file_analysis", model: "m", costUsd, createdAt: new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000) } });
+
+    it("stops a person at their daily cap, naming it, while others continue", async () => {
+      vi.stubEnv("AI_USER_DAILY_USD", "0.01");
+      await spend(sara, 0.02);
+      const create = vi.fn().mockResolvedValue(reply);
+      const stopped = await callClaude(prisma, { ...ctx(), userId: sara }, params, fakeClient(create)).catch((e: unknown) => e);
+      expect(stopped).toBeInstanceOf(AiLimitError);
+      expect(stopped).toMatchObject({ reason: "user_day", message: "You have reached your daily AI limit ($0.01)." });
+      // Omar has his own cap of $1, so the default does not apply to him.
+      await spend(omar, 0.02);
+      await expect(callClaude(prisma, { ...ctx(), userId: omar }, params, fakeClient(create))).resolves.toBeDefined();
+    });
+
+    it("stops the whole company at its monthly cap, ignoring last month", async () => {
+      vi.stubEnv("AI_DAILY_USD", "100");
+      vi.stubEnv("AI_MONTHLY_USD", "0.05");
+      await spend(null, 0.06, 40);
+      const create = vi.fn().mockResolvedValue(reply);
+      await expect(callClaude(prisma, ctx(), params, fakeClient(create))).resolves.toBeDefined();
+      await spend(null, 0.06);
+      const stopped = await callClaude(prisma, ctx(), params, fakeClient(create)).catch((e: unknown) => e);
+      expect(stopped).toMatchObject({ reason: "company_month" });
+    });
+
+    it("uses the company's own caps when set", async () => {
+      vi.stubEnv("AI_DAILY_USD", "0.01");
+      await prisma.organization.update({ where: { id: orgId }, data: { aiDailyUsd: 5 } });
+      await spend(null, 0.02);
+      const create = vi.fn().mockResolvedValue(reply);
+      await expect(callClaude(prisma, ctx(), params, fakeClient(create))).resolves.toBeDefined();
+      await prisma.organization.update({ where: { id: orgId }, data: { aiDailyUsd: null } });
+    });
   });
 });

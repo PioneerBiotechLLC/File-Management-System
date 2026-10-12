@@ -3,9 +3,9 @@ import ExcelJS from "exceljs";
 import mammoth from "mammoth";
 
 /**
- * Turns an uploaded file into something Claude can read.
- * PDFs and images go to Claude as document and image blocks (Claude reads scans and photos natively).
- * Word, Excel, CSV and plain text become text here. Anything else is stored but not read.
+ * Turns an uploaded file into something Claude can read, in memory only: nothing produced here is
+ * stored. PDFs and images go to Claude as document and image blocks (Claude reads scans and photos
+ * natively). Word, Excel, CSV and plain text become text here. Anything else is stored but not read.
  */
 
 type DocumentBlock = Anthropic.Beta.Messages.BetaRequestDocumentBlock;
@@ -26,9 +26,6 @@ const AI_TEXT_MAX_CHARS = 100_000;
 const SHEET_MAX_ROWS = 200;
 const SHEET_MAX_COLUMNS = 40;
 
-/** Plain text kept per file for search. */
-export const SEARCH_TEXT_MAX_CHARS = 20_000;
-
 type FileKind =
   | { kind: "pdf" }
   | { kind: "image"; mediaType: ImageMediaType }
@@ -38,7 +35,6 @@ type FileKind =
   | { kind: "other"; label: string };
 
 export type Extraction =
-  /** Claude reads the blocks and transcribes the text for search. */
   | { kind: "blocks"; blocks: [DocumentBlock | ImageBlock]; readStatus: "full" }
   | { kind: "text"; text: string; readStatus: "full" | "partial" }
   | { kind: "unreadable"; readStatus: "not_read"; reason: string };

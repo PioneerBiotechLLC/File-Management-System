@@ -44,6 +44,7 @@ export function CompanyHeader({
   }
   if (canManage) {
     nav.push({ href: `${base}/log`, label: "Log", active: pathname.startsWith(`${base}/log`) });
+    nav.push({ href: `${base}/usage`, label: "Usage", active: pathname.startsWith(`${base}/usage`) });
     nav.push({ href: `${base}/settings`, label: "Settings", active: pathname.startsWith(`${base}/settings`) });
   }
 

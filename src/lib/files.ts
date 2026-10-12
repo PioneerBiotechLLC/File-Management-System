@@ -11,18 +11,20 @@ import { can } from "@/lib/permissions";
 import { head, objectKey, presignDownload, presignUpload, remove } from "@/lib/storage";
 
 /**
- * Files are filed by hand: an upload lands in the folder the uploader picked, or waits unfiled in
- * Review until someone chooses one. Every query here is limited to the folders the user may see.
+ * A new upload waits unfiled in Review: the AI reads it, the uploader confirms the summary and
+ * then the folder (see intake.ts). Every query here is limited to the folders the user may see.
  */
 
 /** Matches the 15-minute lifetime of an upload URL. */
 const UPLOAD_WINDOW_MS = 15 * 60 * 1000;
+/** Matches intake.READ_TIMEOUT_MS: a read older than this no longer counts as "in progress". */
+const READING_WINDOW_MS = 2 * 60 * 1000;
 const TRASH_DAYS = 30;
 /** FileVersion.sizeBytes is a 32-bit integer. */
 const MAX_BYTES_LIMIT = 2_000_000_000;
 const PAGE_SIZE = 50;
 
-type FileContext = {
+export type FileContext = {
   orgId: string;
   userId: string;
   email: string;
@@ -79,6 +81,24 @@ const LIST_SELECT = {
   uploader: { select: { name: true, email: true } },
 } satisfies Prisma.StoredFileSelect;
 
+/** What Review needs: the draft summary and how the AI reading went. */
+const REVIEW_SELECT = {
+  ...LIST_SELECT,
+  docDate: true,
+  facts: true,
+  tags: true,
+  readStatus: true,
+  aiModel: true,
+  aiError: true,
+  processingStartedAt: true,
+  summaryConfirmedAt: true,
+  suggestedFolderId: true,
+  filingConfidence: true,
+  filingReason: true,
+} satisfies Prisma.StoredFileSelect;
+
+export type ReviewItem = Prisma.StoredFileGetPayload<{ select: typeof REVIEW_SELECT }>;
+
 type FileListItem = Prisma.StoredFileGetPayload<{ select: typeof LIST_SELECT }>;
 
 const DETAIL_SELECT = {
@@ -98,6 +118,11 @@ const DETAIL_SELECT = {
   facts: true,
   tags: true,
   filedBy: true,
+  readStatus: true,
+  aiModel: true,
+  aiError: true,
+  summaryConfirmedAt: true,
+  summaryConfirmedBy: true,
   createdAt: true,
   updatedAt: true,
   deletedAt: true,
@@ -124,9 +149,8 @@ const startInput = z.object({
   size: z.number().int().positive("The file is empty."),
   mimeType: z.string().max(300),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  /** A folder chosen up front files the upload at once, skipping the AI. The web app never does this. */
   folderId: z.string().min(1).nullish(),
-  /** The uploader's answer to "What is this file?"; ignored for new versions. */
-  docType: z.enum(DOC_TYPES).nullish(),
   /** Set to add a new version to this file instead of creating a file. */
   fileId: z.string().min(1).nullish(),
   allowDuplicate: z.boolean().optional(),
@@ -189,6 +213,14 @@ export async function startUpload(prisma: Db, ctx: FileContext, rawInput: StartU
 
   if (input.folderId && !ctx.writable.has(input.folderId)) throw new UserError("You cannot upload to that folder.");
 
+  // Only admins upload in bulk: everyone else waits for the AI to finish reading the last file.
+  if (ctx.role !== "admin") {
+    const reading = await prisma.storedFile.count({
+      where: { orgId: ctx.orgId, uploadedBy: ctx.userId, status: "processing", processingStartedAt: { gte: new Date(Date.now() - READING_WINDOW_MS) } },
+    });
+    if (reading > 0) throw new UserError("Wait for the file being read to finish, then upload the next one.");
+  }
+
   if (!input.allowDuplicate) {
     const existing = await prisma.storedFile.findFirst({
       where: visibleFiles(ctx, { sha256: input.sha256 }),
@@ -209,7 +241,6 @@ export async function startUpload(prisma: Db, ctx: FileContext, rawInput: StartU
       mimeType,
       sizeBytes: input.size,
       sha256: input.sha256,
-      docType: input.docType ?? null,
       status: "uploading",
       uploadedBy: ctx.userId,
       versions: { create: { versionNo: 1, sizeBytes: input.size, sha256: input.sha256, originalName: name, mimeType, uploadedBy: ctx.userId } },
@@ -224,15 +255,15 @@ type ConfirmResult = {
   fileId: string;
   name: string;
   versionNo: number;
-  /** "ready" when filed; "needs_review" when it waits in Review for a folder. */
-  status: "ready" | "needs_review";
+  /** "ready" when filed; "processing" when the AI is to read it next; "needs_review" when it waits in Review. */
+  status: "ready" | "processing" | "needs_review";
   folderPath: string | null;
 };
 
 /**
  * Step 2: checks the bytes arrived with the size the browser declared, then makes the file or
- * version real. A new file with a folder is filed at once; without one it waits in Review.
- * Confirming twice is harmless.
+ * version real. A new file goes to "processing" for the AI to read (intake.readUpload), unless a
+ * folder was chosen up front, which files it at once. Confirming twice is harmless.
  */
 export async function confirmUpload(
   prisma: Db,
@@ -249,7 +280,7 @@ export async function confirmUpload(
   if (!file || !version || version.uploadedBy !== ctx.userId) throw new UserError("That upload was not found. Please try again.");
 
   const isNewFile = file.status === "uploading" && input.versionNo === 1;
-  const done = (status: "ready" | "needs_review", folderId: string | null): ConfirmResult => ({
+  const done = (status: ConfirmResult["status"], folderId: string | null): ConfirmResult => ({
     fileId: file.id,
     name: file.name,
     versionNo: input.versionNo,
@@ -258,7 +289,7 @@ export async function confirmUpload(
   });
 
   // Already confirmed.
-  if (!isNewFile && input.versionNo <= file.currentVersion) return done(file.folderId ? "ready" : "needs_review", file.folderId);
+  if (!isNewFile && input.versionNo <= file.currentVersion) return done(file.folderId ? "ready" : file.status === "processing" ? "processing" : "needs_review", file.folderId);
   if (!isNewFile && input.versionNo !== file.currentVersion + 1) throw new UserError("A newer version was uploaded first. Please try again.");
   if (!isNewFile && !can(ctx.role, "file.rename", { ownsFile: file.uploadedBy === ctx.userId })) {
     throw new UserError("You can only add versions to files you uploaded.");
@@ -276,7 +307,7 @@ export async function confirmUpload(
 
   if (isNewFile) {
     const folderId = file.folderId && ctx.writable.has(file.folderId) ? file.folderId : null;
-    const status = folderId ? "ready" : "needs_review";
+    const status = folderId ? "ready" : "processing";
     await prisma.$transaction([
       prisma.storedFile.update({ where: { id: file.id }, data: { status, folderId, filedBy: folderId ? ctx.email : null } }),
       prisma.auditLog.create({
@@ -324,7 +355,7 @@ export async function confirmUpload(
 async function findFile(prisma: Db, ctx: FileContext, fileId: string) {
   const file = await prisma.storedFile.findFirst({
     where: visibleFiles(ctx, { id: fileId }),
-    select: { id: true, name: true, folderId: true, currentVersion: true, uploadedBy: true, sha256: true },
+    select: { id: true, name: true, folderId: true, currentVersion: true, uploadedBy: true, sha256: true, summaryConfirmedAt: true },
   });
   if (!file) throw notFound();
   return file;
@@ -358,11 +389,11 @@ export async function listFiles(prisma: Db, ctx: FileContext, options: ListFiles
   return { items, total, page, pages: Math.max(1, Math.ceil(total / PAGE_SIZE)) };
 }
 
-/** Files waiting for a folder: the uploader's own, or everyone's for admins. */
-export async function listUnfiled(prisma: Db, ctx: FileContext): Promise<FileListItem[]> {
+/** Files waiting in Review (being read, or needing a summary or a folder): the uploader's own, or everyone's for admins. */
+export async function listUnfiled(prisma: Db, ctx: FileContext): Promise<ReviewItem[]> {
   return prisma.storedFile.findMany({
     where: unfiledWhere(ctx),
-    select: LIST_SELECT,
+    select: REVIEW_SELECT,
     orderBy: { createdAt: "asc" },
     take: 200,
   });
@@ -373,7 +404,7 @@ type UnfiledScope = Pick<FileContext, "orgId" | "userId" | "role">;
 function unfiledWhere(ctx: UnfiledScope): Prisma.StoredFileWhereInput {
   return {
     orgId: ctx.orgId,
-    status: "needs_review",
+    status: { in: ["processing", "needs_review"] },
     folderId: null,
     deletedAt: null,
     ...(ctx.role === "admin" ? {} : { uploadedBy: ctx.userId }),
@@ -454,19 +485,23 @@ export async function downloadTarget(
 // Changing
 // ---------------------------------------------------------------------------------------------
 
-/** Files an unfiled file into a folder, or moves a filed one. Unfiled files go through the Review permission. */
+/**
+ * Files an unfiled file into a folder, or moves a filed one. Unfiled files go through the Review
+ * permission and need a confirmed summary first, so every filed file has one.
+ */
 export async function moveFile(prisma: Db, ctx: FileContext, input: { fileId: string; folderId: string }): Promise<void> {
   const file = await findFile(prisma, ctx, input.fileId);
   const ownsFile = file.uploadedBy === ctx.userId;
   const allowed = file.folderId === null ? can(ctx.role, "review.accept") && (ownsFile || ctx.role === "admin") : can(ctx.role, "file.move", { ownsFile });
   if (!allowed) throw new UserError("You can only move files you uploaded.");
   if (!ctx.writable.has(input.folderId)) throw new UserError("You cannot file into that folder.");
+  if (file.folderId === null && !file.summaryConfirmedAt) throw new UserError("Confirm the summary before filing.");
   if (file.folderId === input.folderId) return;
 
   await prisma.$transaction([
     prisma.storedFile.update({
       where: { id: file.id },
-      data: { folderId: input.folderId, status: "ready", filedBy: ctx.email },
+      data: { folderId: input.folderId, status: "ready", filedBy: ctx.email, processingStartedAt: null },
     }),
     prisma.auditLog.create({
       data: {

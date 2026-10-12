@@ -5,7 +5,7 @@ import { useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { useUploads } from "@/components/upload-provider";
 
-/** Opens the file picker; each file is then asked what it is, which decides its folder. */
+/** Opens the file picker; the AI then reads the file and the uploader confirms the summary and folder in Review. */
 export function UploadButton() {
   const { canUpload, pick } = useUploads();
   if (!canUpload) return null;

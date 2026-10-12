@@ -1,7 +1,7 @@
 import { crc32 } from "node:zlib";
 import ExcelJS from "exceljs";
 import { describe, expect, it } from "vitest";
-import { SEARCH_TEXT_MAX_CHARS, cellText, decodeText, detectFileKind, extract } from "./extract";
+import { cellText, decodeText, detectFileKind, extract } from "./extract";
 
 const bytes = (s: string) => new Uint8Array(Buffer.from(s, "latin1"));
 const PDF = bytes("%PDF-1.7\n1 0 obj\n<<>>\nendobj\n");
@@ -183,7 +183,7 @@ describe("extract", () => {
     const out = await extract(bytes("PO-4512 " + "x".repeat(150_000)), "log.txt", "text/plain");
     expect(out).toMatchObject({ kind: "text", readStatus: "partial" });
     expect(out.kind === "text" && out.text.startsWith("PO-4512")).toBe(true);
-    expect(out.kind === "text" && out.text.length).toBeGreaterThan(SEARCH_TEXT_MAX_CHARS);
+    expect(out.kind === "text" && out.text.length).toBeGreaterThan(20_000);
   });
 
   it("stores damaged Office files without reading them", async () => {

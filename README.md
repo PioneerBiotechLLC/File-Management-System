@@ -2,16 +2,27 @@
 
 A company document manager. People upload a file; Claude reads it, writes a short summary, pulls out key facts and files it in the right folder. Anyone with access finds files by asking in plain English or Arabic.
 
-Built in four phases (see `prompt-file-manager.md`). **Phases 1 and 2 are in place, without AI, plus an activity log:** Microsoft sign-in, companies, roles and users, and a complete manual filing system. Uploading, filing, browsing, versions and review all work by hand. The code that reads files with Claude and files them automatically (`src/lib/analysis.ts`, `ai.ts`, `filing.ts`) is written and tested but not wired in yet. Search comes in phase 3; operations and the full guide in phase 4.
+Built in phases (see `prompt-file-manager.md`). **In place:** Microsoft sign-in, companies, roles and users, the filing system, an activity log, and AI filing: Claude reads each upload and drafts the summary, the uploader confirms it, Claude suggests the folder, the uploader confirms that too. Nothing is filed without a person confirming both. AI spend is capped per person and per company, with a Usage dashboard for admins. Search comes next; operations and the full guide after that.
 
 ## How filing works
 
-1. **Upload** from any page: drag files onto it, or press Upload. Files go straight from the browser to the storage bucket; nothing passes through the app server.
-2. **Say what it is.** Each file asks "What is this file?" with a dropdown (a quotation from a supplier, a COA, an employment contract…). The answer picks the folder and the document type; the list comes from `src/lib/file-kinds.ts`. You can also choose a folder yourself, or answer "Not sure" to leave it in **Review** for someone to file. The folder open when you upload is the suggested answer.
-3. **Open a file** to preview PDFs and images, edit its title, summary, type, date and tags, move it, rename it, add a new version, or delete it. Deleted files stay in **Deleted** for 30 days.
-4. **Identical files** are detected by content; you can open the existing one or upload anyway.
-5. **Admins** manage folders in Settings: create, rename, describe, nest, restrict, grant access, deactivate.
-6. **Log** (admins): every sign-in, upload, download, view, move, rename, delete and setting change, with the email of who did it.
+1. **Upload** from any page: drag a file onto it, or press Upload. Files go straight from the browser to the storage bucket; nothing passes through the app server. Everyone uploads one file at a time; admins may upload several.
+2. **The AI reads it** (5–30 seconds, under a minute) and drafts the summary: what the document is, who it is from and to, its date, the prices, the materials or products, and every reference number. The file itself is sent to Claude for this one read; nothing from its contents is stored except the summary.
+3. **Check the summary** in **Review**: fix anything wrong and confirm. When the AI could not read the file (too large, an unsupported type, handwritten or unclear, a spend cap reached, or a failure), you write the summary yourself. Every filed file has a confirmed summary.
+4. **Confirm the folder.** The AI suggests one from the confirmed summary; the "What is this file?" dropdown shows its answer pre-selected (the list comes from `src/lib/file-kinds.ts`). Change it, or choose any folder yourself, and save. Only then is the file filed, and the log records who confirmed what.
+5. **Open a file** to preview PDFs and images, edit its title, summary, type, date and tags, move it, rename it, add a new version, or delete it. Deleted files stay in **Deleted** for 30 days.
+6. **Identical files** are detected by content; you can open the existing one or upload anyway.
+7. **Admins** manage folders in Settings: create, rename, describe, nest, restrict, grant access, deactivate.
+8. **Log** (admins): every sign-in, upload, AI read, summary confirmation, download, view, move, rename, delete and setting change, with the email of who did it.
+9. **Usage** (admins): what the AI cost today and this month, per person and for the company, against the limits; limits can be changed there.
+
+## AI costs and limits
+
+The AI reads with `ANTHROPIC_MODEL` (Claude Sonnet 5.5 by default) and chooses folders with `ANTHROPIC_MODEL_LIGHT` (Claude Haiku 5.5). A typical one- or two-page document costs about $0.01–0.03 to read; a long PDF up to about $0.40. The folder choice after an edited summary costs well under a cent. Every call is recorded with its tokens and cost.
+
+Spend is capped in USD per person per day and month, and per company per day and month. The defaults come from `AI_USER_DAILY_USD`, `AI_USER_MONTHLY_USD`, `AI_DAILY_USD` and `AI_MONTHLY_USD`; admins override them in Usage. A cap can be overshot by at most one call. When a cap is reached the AI stops and people write summaries by hand until it resets, so uploading never stops. Set a spend limit in the Anthropic console as well.
+
+Safeguards against text planted in documents: the model is told that documents are data, not instructions; it can only choose among the folders the uploader may write to, which the code enforces again; the output must match a strict schema; and a person confirms the summary and the folder before anything is filed.
 
 ## Stack
 
@@ -25,6 +36,8 @@ Next.js 15 (App Router), React 19, TypeScript, Tailwind CSS 4 with shadcn/ui, Au
 | Admin | Everything in their company, including folders and users |
 | Editor | Upload; rename, move and delete their own uploads; accept filing suggestions |
 | Viewer | Browse, search and download |
+
+Everyone's AI reading is limited by the spend caps above; viewers never upload, so they spend nothing.
 
 Restricted folders (HR and Finance / Bank by default) are visible only to admins, owners and people granted access. A file waiting in Review is visible only to whoever uploaded it, and to admins.
 

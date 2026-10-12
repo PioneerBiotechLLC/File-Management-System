@@ -55,4 +55,16 @@ describe("describeEntry", () => {
     expect(sentence("user.reactivate", "u9", undefined, undefined, "user")).toBe("Reactivated vic@x.com");
     expect(sentence("something.new", "x")).toBe("something.new");
   });
+
+  it("describes AI reading, summaries and limits", () => {
+    expect(sentence("file.analyze", "f1", undefined, { outcome: "read", costUsd: 0.0213 })).toBe("Had the AI read [Invoice 42.pdf] ($0.021)");
+    expect(sentence("file.analyze", "f1", undefined, { outcome: "read", costUsd: 0.5 })).toBe("Had the AI read [Invoice 42.pdf] ($0.50)");
+    expect(sentence("file.analyze", "f1", undefined, { outcome: "not_read", reason: "Handwritten" })).toBe("The AI did not read [Invoice 42.pdf]: Handwritten");
+    expect(sentence("file.analyze", "f1", undefined, { outcome: "failed", reason: "overloaded" })).toBe("AI reading of [Invoice 42.pdf] failed: overloaded");
+    expect(sentence("file.summary", "f1", undefined, { source: "ai", edited: false })).toBe("Confirmed the AI summary of [Invoice 42.pdf]");
+    expect(sentence("file.summary", "f1", undefined, { source: "ai", edited: true })).toBe("Edited and confirmed the AI summary of [Invoice 42.pdf]");
+    expect(sentence("file.summary", "f1", undefined, { source: "manual" })).toBe("Wrote the summary of [Invoice 42.pdf]");
+    expect(sentence("ai.limits", "org", undefined, { dailyUsd: 5, monthlyUsd: null }, "organization")).toBe("Set the company's AI limits to $5.00 a day and the default a month");
+    expect(sentence("ai.limits", "u1", undefined, { email: "sara@x.com", dailyUsd: 1, monthlyUsd: 20 }, "user")).toBe("Set sara@x.com's AI limits to $1.00 a day and $20.00 a month");
+  });
 });

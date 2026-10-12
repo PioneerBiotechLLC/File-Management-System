@@ -10,6 +10,7 @@ const missingOr = (problem: string) => (issue: { input?: unknown }) => (issue.in
 const required = z.string({ error: missingOr("must be text") }).trim().min(1, "is missing");
 const url = () => z.url({ error: missingOr("must be a URL") });
 const positiveInt = (fallback: number) => z.coerce.number().int().positive().default(fallback);
+const usd = (fallback: number) => z.coerce.number().nonnegative().default(fallback);
 
 const groups = {
   database: z.object({
@@ -35,8 +36,14 @@ const groups = {
     AI_MAX_CALLS_PER_DAY: positiveInt(500),
   }),
   limits: z.object({
+    /** Default AI spend caps in USD; a company or a member can be given their own in Usage. */
+    AI_DAILY_USD: usd(10),
+    AI_MONTHLY_USD: usd(150),
+    AI_USER_DAILY_USD: usd(2),
+    AI_USER_MONTHLY_USD: usd(30),
     FILES_MAX_MB: positiveInt(100),
-    FILES_AUTO_FILE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.75),
+    /** Files larger than this are not read by the AI; the uploader writes the summary. */
+    FILES_AI_MAX_MB: positiveInt(22),
     FILES_AI_SEARCHES_PER_USER_PER_DAY: positiveInt(50),
     DATA_ENCRYPTION_KEY: z
       .string()

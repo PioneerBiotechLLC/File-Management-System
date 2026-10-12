@@ -3,6 +3,7 @@ import {
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
+  NoSuchKey,
   NotFound,
   PutObjectCommand,
   S3Client,
@@ -92,6 +93,18 @@ export async function head(key: string): Promise<{ sizeBytes: number; contentTyp
     return { sizeBytes: out.ContentLength ?? 0, contentType: out.ContentType ?? null };
   } catch (error) {
     if (error instanceof NotFound) return null;
+    throw error;
+  }
+}
+
+/** The bytes of a stored object, or null when it does not exist. Used only to read a file with the AI. */
+export async function getObject(key: string): Promise<Uint8Array | null> {
+  const { s3, bucket: Bucket } = bucket();
+  try {
+    const out = await s3.send(new GetObjectCommand({ Bucket, Key: key }));
+    return out.Body ? await out.Body.transformToByteArray() : null;
+  } catch (error) {
+    if (error instanceof NoSuchKey || error instanceof NotFound) return null;
     throw error;
   }
 }

@@ -5,7 +5,7 @@ import { FileIcon } from "@/components/file-icon";
 import { NewVersionButton } from "@/components/upload-buttons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { db } from "@/lib/db";
 import { DOC_TYPE_LABELS, type DocType } from "@/lib/doc-types";
 import { fileContext, getFile } from "@/lib/files";
@@ -66,6 +66,12 @@ export default async function FilePage({ params }: { params: Promise<{ slug: str
   const uploader = file.uploader.name ?? file.uploader.email;
   const facts = file.facts as Facts;
   const docDate = file.docDate?.toISOString().slice(0, 10) ?? "";
+  const readByAi = file.readStatus === "full" || file.readStatus === "partial";
+  const summaryNote = file.summaryConfirmedAt
+    ? `${readByAi ? `Read by the AI (${file.aiModel ?? "Claude"}); summary` : "Summary written and"} confirmed by ${file.summaryConfirmedBy ?? "someone"} on ${formatDate.format(file.summaryConfirmedAt)}.`
+    : file.folderId === null
+      ? "Not confirmed yet."
+      : "This file was filed before summaries were confirmed.";
 
   return (
     <div className="grid gap-6">
@@ -84,7 +90,11 @@ export default async function FilePage({ params }: { params: Promise<{ slug: str
             {formatBytes(file.sizeBytes)} · version {file.currentVersion} · added by {uploader} on {formatDate.format(file.createdAt)}
           </p>
           <div className="mt-2 flex flex-wrap gap-1.5">
-            {file.folderId === null && <Badge variant="outline">Needs a folder</Badge>}
+            {file.folderId === null && (
+              <Link href={`/c/${slug}/review?file=${file.id}`}>
+                <Badge variant="outline">Waiting in Review</Badge>
+              </Link>
+            )}
             {file.folderId && ctx.restricted.has(file.folderId) && (
               <Badge variant="secondary">
                 <Lock /> Restricted
@@ -123,6 +133,7 @@ export default async function FilePage({ params }: { params: Promise<{ slug: str
         <Card>
           <CardHeader>
             <CardTitle>Details</CardTitle>
+            <CardDescription>{summaryNote}</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-5">
             {canEdit ? (

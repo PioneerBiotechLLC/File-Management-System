@@ -31,3 +31,11 @@ export function startOfDay(now: Date, timeZone: string): Date {
   // A DST change between UTC midnight and local midnight shifts the offset; correct once.
   return new Date(midnightAsUtc - offsetMs(new Date(first), timeZone));
 }
+
+/** The instant the local month containing `now` began in `timeZone`. */
+export function startOfMonth(now: Date, timeZone: string): Date {
+  const [year, month] = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit" }).format(now).split("-").map(Number);
+  const firstAsUtc = Date.UTC(year!, month! - 1, 1);
+  const first = firstAsUtc - offsetMs(new Date(firstAsUtc), timeZone);
+  return new Date(firstAsUtc - offsetMs(new Date(first), timeZone));
+}

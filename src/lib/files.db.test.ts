@@ -87,7 +87,6 @@ describe.skipIf(!TEST_DATABASE_URL)("files and folders (database)", () => {
         mimeType: "application/pdf",
         sha256: sha("quotation 1"),
         folderId: folder["Sales/Quotations"],
-        docType: "quotation",
       });
       expect(started).toMatchObject({ kind: "upload", versionNo: 1, name: "QT-2291.pdf", contentType: "application/pdf" });
       if (started.kind !== "upload") return;
@@ -102,7 +101,7 @@ describe.skipIf(!TEST_DATABASE_URL)("files and folders (database)", () => {
       expect(done).toMatchObject({ status: "ready", folderPath: "Sales / Quotations", name: "QT-2291.pdf" });
 
       const detail = await files.getFile(prisma, ctx, started.fileId);
-      expect(detail).toMatchObject({ status: "ready", filedBy: "sara@api-pharma.net", currentVersion: 1, folderPath: "Sales / Quotations", docType: "quotation" });
+      expect(detail).toMatchObject({ status: "ready", filedBy: "sara@api-pharma.net", currentVersion: 1, folderPath: "Sales / Quotations" });
       expect(detail?.versions).toHaveLength(1);
       expect(await prisma.auditLog.count({ where: { orgId, action: "file.upload", targetId: started.fileId } })).toBe(1);
 
@@ -111,12 +110,14 @@ describe.skipIf(!TEST_DATABASE_URL)("files and folders (database)", () => {
       expect(await prisma.auditLog.count({ where: { orgId, action: "file.upload", targetId: started.fileId } })).toBe(1);
     });
 
-    it("leaves a file without a folder waiting in Review", async () => {
+    it("hands a file without a folder to the AI and shows it in Review meanwhile", async () => {
       const done = await upload("sara", "scan0042.pdf", "unfiled scan", null);
-      expect(done).toMatchObject({ status: "needs_review", folderPath: null });
+      expect(done).toMatchObject({ status: "processing", folderPath: null });
       const ctx = await ctxFor("sara");
       expect(await files.countUnfiled(prisma, ctx)).toBeGreaterThanOrEqual(1);
       expect((await files.listUnfiled(prisma, ctx)).map((f) => f.name)).toContain("scan0042.pdf");
+      // Confirming again reports the same state.
+      expect(await files.confirmUpload(prisma, ctx, { fileId: done.fileId, versionNo: 1 })).toMatchObject({ status: "processing" });
     });
 
     it("rejects viewers, blocked files, oversized files and folders the user cannot write to", async () => {
@@ -291,9 +292,11 @@ describe.skipIf(!TEST_DATABASE_URL)("files and folders (database)", () => {
   });
 
   describe("changing files", () => {
-    it("files an unfiled file into a writable folder, and records who did", async () => {
+    it("files an unfiled file into a writable folder once its summary is confirmed, and records who did", async () => {
       const done = await upload("sara", "to-file.pdf", "to file later", null);
       const ctx = await ctxFor("sara");
+      await expect(files.moveFile(prisma, ctx, { fileId: done.fileId, folderId: folder["Sales/Quotations"]! })).rejects.toThrow(/Confirm the summary/);
+      await prisma.storedFile.update({ where: { id: done.fileId }, data: { status: "needs_review", summaryConfirmedAt: new Date(), summaryConfirmedBy: "sara@api-pharma.net" } });
       await expect(files.moveFile(prisma, ctx, { fileId: done.fileId, folderId: folder.HR! })).rejects.toThrow(/cannot file into/);
       await files.moveFile(prisma, ctx, { fileId: done.fileId, folderId: folder["Sales/Quotations"]! });
       expect(await files.getFile(prisma, ctx, done.fileId)).toMatchObject({ status: "ready", filedBy: "sara@api-pharma.net", folderPath: "Sales / Quotations" });

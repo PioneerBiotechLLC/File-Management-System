@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { AiPurpose } from "@/generated/prisma/enums";
+import { checkBudget, type LimitReason } from "@/lib/ai-limits";
 import type { Db } from "@/lib/db";
 import { aiEnv } from "@/lib/env";
 import { startOfDay } from "@/lib/time";
@@ -84,9 +85,13 @@ export function usageOf(
   return { ...total, costUsd: cost };
 }
 
+/** A cap stopped the call. The message is written for the person who hit it. */
 export class AiLimitError extends Error {
-  constructor() {
-    super("AI limit reached");
+  constructor(
+    public readonly reason: LimitReason,
+    message: string,
+  ) {
+    super(message);
     this.name = "AiLimitError";
   }
 }
@@ -95,8 +100,8 @@ let client: Anthropic | null = null;
 
 export function anthropic(): Anthropic {
   if (!client) {
-    // Bounded so a slow call cannot outlive the 300-second processing route.
-    client = new Anthropic({ apiKey: aiEnv().ANTHROPIC_API_KEY, timeout: 200_000, maxRetries: 1 });
+    // Bounded so a slow call cannot outlive the reading route; the uploader can retry by hand.
+    client = new Anthropic({ apiKey: aiEnv().ANTHROPIC_API_KEY, timeout: 90_000, maxRetries: 0 });
   }
   return client;
 }
@@ -110,15 +115,18 @@ export type AiCallContext = {
 };
 
 /**
- * Reserves one call against the company's daily cap and records it, or returns null when the cap is
- * reached. An advisory lock per company makes the count and the insert atomic.
+ * Reserves one call against the company's daily call cap and the dollar caps, and records it.
+ * An advisory lock per company makes the checks and the insert atomic. Throws AiLimitError.
  */
-async function reserveCall(prisma: Db, ctx: AiCallContext, model: string, cap: number): Promise<string | null> {
-  const since = startOfDay(new Date(), ctx.timezone);
+async function reserveCall(prisma: Db, ctx: AiCallContext, model: string, cap: number): Promise<string> {
+  const now = new Date();
+  const since = startOfDay(now, ctx.timezone);
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`ai-cap:${ctx.orgId}`}))`;
     const used = await tx.aiUsage.count({ where: { orgId: ctx.orgId, createdAt: { gte: since } } });
-    if (used >= cap) return null;
+    if (used >= cap) throw new AiLimitError("company_calls", `The company has reached its daily limit of ${cap} AI calls.`);
+    const budget = await checkBudget(tx, ctx, now);
+    if (!budget.ok) throw new AiLimitError(budget.reason, budget.message);
     const row = await tx.aiUsage.create({
       data: { orgId: ctx.orgId, userId: ctx.userId ?? null, fileId: ctx.fileId ?? null, purpose: ctx.purpose, model },
       select: { id: true },
@@ -128,9 +136,9 @@ async function reserveCall(prisma: Db, ctx: AiCallContext, model: string, cap: n
 }
 
 /**
- * Every Claude call goes through here: it enforces the per-company daily cap, opts into server-side
+ * Every Claude call goes through here: it enforces the call and dollar caps, opts into server-side
  * refusal fallbacks where the model supports them, and writes an AiUsage row with tokens and cost.
- * Throws AiLimitError when the cap is reached; API errors are recorded, then rethrown.
+ * Throws AiLimitError when a cap is reached; API errors are recorded, then rethrown.
  */
 export async function callClaude(
   prisma: Db,
@@ -139,7 +147,6 @@ export async function callClaude(
   client: Pick<Anthropic, "beta"> = anthropic(),
 ): Promise<Message> {
   const usageId = await reserveCall(prisma, ctx, params.model, aiEnv().AI_MAX_CALLS_PER_DAY);
-  if (!usageId) throw new AiLimitError();
 
   try {
     const message = await client.beta.messages.create(

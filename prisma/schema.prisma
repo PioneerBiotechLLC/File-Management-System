@@ -50,6 +50,9 @@ model Organization {
   timezone     String   @default("Asia/Dubai")
   logoUrl      String?
   primaryColor String?
+  /// AI spend caps in USD; null means the AI_DAILY_USD / AI_MONTHLY_USD defaults.
+  aiDailyUsd   Float?
+  aiMonthlyUsd Float?
   createdAt    DateTime @default(now())
 
   memberships Membership[]
@@ -74,10 +77,13 @@ model AppUser {
 }
 
 model Membership {
-  id     String @id @default(cuid())
-  userId String
-  orgId  String
-  role   Role
+  id           String @id @default(cuid())
+  userId       String
+  orgId        String
+  role         Role
+  /// This person's AI spend caps in USD; null means the AI_USER_DAILY_USD / AI_USER_MONTHLY_USD defaults.
+  aiDailyUsd   Float?
+  aiMonthlyUsd Float?
 
   user AppUser      @relation(fields: [userId], references: [id], onDelete: Cascade)
   org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -198,13 +204,18 @@ model StoredFile {
   filingConfidence    Float?
   /// One short sentence shown to the user.
   filingReason        String?
-  /// "ai" or a user email.
+  /// The email of the user whose choice placed the file.
   filedBy             String?
   aiModel             String?
+  /// Why the AI did not read the file, or what went wrong; shown to the uploader.
   aiError             String?
   attempts            Int             @default(0)
+  /// Set while the AI is reading the file; stale after two minutes.
   processingStartedAt DateTime?
-  /// Capped; AES-256-GCM encrypted when DATA_ENCRYPTION_KEY is set.
+  /// When and by whom the summary was checked and confirmed; a file is filed only after this.
+  summaryConfirmedAt  DateTime?
+  summaryConfirmedBy  String?
+  /// Reserved for search; nothing from the file's contents is stored here.
   extractedText       String?
   searchVector        Unsupported("tsvector")?
   uploadedBy          String

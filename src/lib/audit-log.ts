@@ -45,7 +45,8 @@ export const LOG_CATEGORIES = {
   signins: { label: "Sign-ins", prefixes: ["auth."] },
   files: { label: "Files", prefixes: ["file."] },
   folders: { label: "Folders", prefixes: ["folder."] },
-  people: { label: "People", prefixes: ["user.", "membership.", "org."] },
+  people: { label: "People", prefixes: ["user.", "membership."] },
+  company: { label: "Company and AI", prefixes: ["org.", "ai."] },
 } as const;
 
 export type LogCategory = keyof typeof LOG_CATEGORIES;
@@ -116,6 +117,8 @@ const record = (value: unknown): Record<string, unknown> => (value && typeof val
 const text = (value: unknown): string | undefined => (typeof value === "string" && value ? value : undefined);
 
 const DETAIL_LABELS: Record<string, string> = { title: "title", summary: "summary", docType: "type", docDate: "date", tags: "tags" };
+const money = (value: unknown) => (typeof value === "number" ? `$${value.toFixed(value < 0.1 ? 3 : 2)}` : null);
+const cap = (value: unknown) => (typeof value === "number" ? `$${value.toFixed(2)}` : "the default");
 const REFUSED: Record<string, string> = { not_listed: "not on the list of users", inactive: "account deactivated" };
 
 /** A plain-English sentence for one log entry, as text and links. */
@@ -160,6 +163,19 @@ export function describeEntry(entry: Entry, lookups: Lookups): LogPart[] {
     case "file.preview": {
       const verb = entry.action === "file.download" ? "Downloaded " : "Viewed ";
       return after.current === false ? [verb, `version ${String(after.versionNo)} of `, file] : [verb, file];
+    }
+    case "file.analyze": {
+      const cost = money(after.costUsd);
+      if (after.outcome === "read") return ["Had the AI read ", file, cost ? ` (${cost})` : ""];
+      if (after.outcome === "failed") return ["AI reading of ", file, ` failed: ${text(after.reason) ?? "unknown error"}`];
+      return ["The AI did not read ", file, `: ${text(after.reason) ?? "no reason given"}`];
+    }
+    case "file.summary":
+      if (after.source !== "ai") return ["Wrote the summary of ", file];
+      return [after.edited ? "Edited and confirmed the AI summary of " : "Confirmed the AI summary of ", file];
+    case "ai.limits": {
+      const who = entry.targetType === "organization" ? "the company's" : `${person}'s`;
+      return [`Set ${who} AI limits to ${cap(after.dailyUsd)} a day and ${cap(after.monthlyUsd)} a month`];
     }
 
     case "folder.create":
