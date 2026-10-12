@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, ChevronsUpDown, LogOut } from "lucide-react";
+import { Check, ChevronsUpDown, LogOut, Search } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOutAction } from "@/app/actions";
@@ -100,7 +100,18 @@ export function CompanyHeader({
           ))}
         </nav>
 
-        <div className="ml-auto">
+        <form action={`${base}/search`} className="relative ml-auto hidden sm:block">
+          <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
+          <input
+            type="search"
+            name="q"
+            placeholder="Search files"
+            aria-label="Search files"
+            className="border-input focus-visible:border-ring focus-visible:ring-ring/50 h-8 w-48 rounded-md border bg-transparent pl-8 pr-2 text-sm outline-none focus-visible:ring-[3px] md:w-64"
+          />
+        </form>
+
+        <div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="sm" className="max-w-56 truncate">

@@ -1,4 +1,5 @@
 import type { Db } from "@/lib/db";
+import { DOC_TYPE_LABELS, type DocType } from "@/lib/doc-types";
 import type { Prisma } from "@/generated/prisma/client";
 
 // ---------------------------------------------------------------------------------------------
@@ -46,6 +47,7 @@ export const LOG_CATEGORIES = {
   files: { label: "Files", prefixes: ["file."] },
   folders: { label: "Folders", prefixes: ["folder."] },
   people: { label: "People", prefixes: ["user.", "membership."] },
+  searches: { label: "Searches", prefixes: ["search."] },
   company: { label: "Company and AI", prefixes: ["org.", "ai."] },
 } as const;
 
@@ -176,6 +178,21 @@ export function describeEntry(entry: Entry, lookups: Lookups): LogPart[] {
     case "ai.limits": {
       const who = entry.targetType === "organization" ? "the company's" : `${person}'s`;
       return [`Set ${who} AI limits to ${cap(after.dailyUsd)} a day and ${cap(after.monthlyUsd)} a month`];
+    }
+    case "search.instant": {
+      const filters = record(after.filters);
+      const where = [
+        typeof filters.folderId === "string" && lookups.folders.has(filters.folderId) ? `in ${lookups.folders.get(filters.folderId)}` : null,
+        text(filters.docType) ? `type ${DOC_TYPE_LABELS[filters.docType as DocType] ?? text(filters.docType)}` : null,
+        text(filters.dateFrom) ? `from ${text(filters.dateFrom)}` : null,
+        text(filters.dateTo) ? `to ${text(filters.dateTo)}` : null,
+      ].filter(Boolean);
+      return [`Searched for “${text(after.query) ?? ""}”${where.length ? ` ${where.join(", ")}` : ""} (${String(after.hits ?? 0)} ${after.hits === 1 ? "result" : "results"})`];
+    }
+    case "search.ask": {
+      const found = Array.isArray(after.files) ? after.files.length : 0;
+      const outcome = text(after.error) ? `failed: ${text(after.error)}` : `${found} ${found === 1 ? "file" : "files"} found`;
+      return [`Asked the AI “${text(after.question) ?? ""}” (${outcome})`];
     }
 
     case "folder.create":

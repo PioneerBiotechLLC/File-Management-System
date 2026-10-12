@@ -8,6 +8,7 @@ import { UserError } from "@/lib/errors";
 import { cleanFileName, isBlockedFile, normalizeMimeType, previewKind } from "@/lib/file-names";
 import { folderPaths, loadFolderAccess, restrictedFolderIds } from "@/lib/folders";
 import { can } from "@/lib/permissions";
+import { reindexFile } from "@/lib/search-index";
 import { head, objectKey, presignDownload, presignUpload, remove } from "@/lib/storage";
 
 /**
@@ -528,6 +529,7 @@ export async function renameFile(prisma: Db, ctx: FileContext, input: { fileId: 
       data: { orgId: ctx.orgId, userEmail: ctx.email, action: "file.rename", targetType: "file", targetId: file.id, before: { name: file.name }, after: { name } },
     }),
   ]);
+  await reindexFile(prisma, file.id);
 }
 
 const tagText = z.string().transform((raw) => {
@@ -586,6 +588,7 @@ export async function updateFileDetails(
       },
     }),
   ]);
+  await reindexFile(prisma, file.id);
 }
 
 /** Soft delete: the file disappears from lists and can be restored for 30 days. */

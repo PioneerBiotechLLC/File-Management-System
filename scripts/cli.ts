@@ -5,6 +5,7 @@ import { createCompany, slugSchema } from "@/lib/companies";
 import { db, disconnect } from "@/lib/db";
 import { seedDefaultFolders } from "@/lib/folders";
 import { UserError } from "@/lib/errors";
+import { reindexAll } from "@/lib/search-index";
 import { addMember, deactivateUser, emailSchema, makeOwner, removeMember } from "@/lib/users";
 
 try {
@@ -94,6 +95,18 @@ user
       await deactivateUser(db(), { email: normalized, actor });
       console.log(`Deactivated ${normalized}. They are signed out within 5 minutes.`);
     }
+  });
+
+const index = program.command("index").description("The search index");
+
+index
+  .command("rebuild")
+  .description("Rebuild the search entries of every file (one company, or all)")
+  .option("--org <slug>", "company slug")
+  .action(async (opts: { org?: string }) => {
+    const company = opts.org ? await companyBySlug(opts.org) : null;
+    const count = await reindexAll(db(), company?.id);
+    console.log(`Reindexed ${count} files${company ? ` in ${company.slug}` : ""}.`);
   });
 
 const folders = program.command("folders").description("Folders");

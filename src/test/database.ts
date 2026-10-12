@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { Client } from "pg";
+import { Client, Pool } from "pg";
 import { PrismaClient } from "@/generated/prisma/client";
 
 /** Database-backed tests run only when TEST_DATABASE_URL points at a disposable Postgres. */
@@ -35,7 +35,10 @@ export async function freshDatabase(): Promise<{ prisma: PrismaClient; schema: s
   // Prisma's local dev server shares session settings between connections, so never leave this set.
   await admin.query("SET search_path TO public");
   // One connection: Prisma's local dev server (PGlite) breaks when connections interleave.
-  const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: TEST_DATABASE_URL, max: 1 }, { schema }) });
+  // Prisma qualifies its own queries with the schema; raw SQL needs the search_path as well.
+  const pool = new Pool({ connectionString: TEST_DATABASE_URL, max: 1 });
+  pool.on("connect", (client) => void client.query(`SET search_path TO "${schema}", public`));
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }) });
   return {
     prisma,
     schema,

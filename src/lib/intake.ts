@@ -9,6 +9,7 @@ import { extract } from "@/lib/extract";
 import type { FileContext } from "@/lib/files";
 import { suggestFolder, summaryChanged, type ConfirmedSummary } from "@/lib/filing";
 import { can } from "@/lib/permissions";
+import { reindexFile } from "@/lib/search-index";
 import { getObject, objectKey } from "@/lib/storage";
 
 /**
@@ -329,6 +330,8 @@ export async function confirmSummary(
       },
     }),
   ]);
+
+  await reindexFile(prisma, file.id);
 
   let filing: { folderId: string; confidence: number; reason: string } | null = null;
   if (!edited && file.suggestedFolderId && ctx.writable.has(file.suggestedFolderId)) {

@@ -67,4 +67,13 @@ describe("describeEntry", () => {
     expect(sentence("ai.limits", "org", undefined, { dailyUsd: 5, monthlyUsd: null }, "organization")).toBe("Set the company's AI limits to $5.00 a day and the default a month");
     expect(sentence("ai.limits", "u1", undefined, { email: "sara@x.com", dailyUsd: 1, monthlyUsd: 20 }, "user")).toBe("Set sara@x.com's AI limits to $1.00 a day and $20.00 a month");
   });
+
+  it("describes searches", () => {
+    expect(sentence("search.instant", "u1", undefined, { query: "insulin gulf", hits: 1 }, "search")).toBe("Searched for “insulin gulf” (1 result)");
+    expect(sentence("search.instant", "u1", undefined, { query: "insulin", hits: 0, filters: { folderId: "sales", docType: "coa", dateFrom: "2026-01-01" } }, "search")).toBe(
+      "Searched for “insulin” in Sales / Quotations, type Certificate of analysis, from 2026-01-01 (0 results)",
+    );
+    expect(sentence("search.ask", "u1", undefined, { question: "last spring's quotation", files: ["a", "b"] }, "search")).toBe("Asked the AI “last spring's quotation” (2 files found)");
+    expect(sentence("search.ask", "u1", undefined, { question: "x", error: "cap reached" }, "search")).toBe("Asked the AI “x” (failed: cap reached)");
+  });
 });
