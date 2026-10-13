@@ -37,6 +37,10 @@ Spend is capped in USD per person per day and month, and per company per day and
 
 Safeguards against text planted in documents: the model is told that documents are data, not instructions; it can only choose among the folders the uploader may write to, which the code enforces again; the output must match a strict schema; and a person confirms the summary and the folder before anything is filed.
 
+## Look
+
+The app wears API Pharma's identity: crimson `#be272c` on warm paper, ink text, Source Sans 3 for text and Merriweather for page titles (both self-hosted by Next, so the font policy stays `'self'`), and the flame mark as the icon and on the sign-in page. The colours are tokens at the top of `src/app/globals.css`. Each company's own logo and colour in the header come from `pnpm org brand`; the logo file for API Pharma is `public/brand/api-pharma-mark.png`.
+
 ## Stack
 
 Next.js 15 (App Router), React 19, TypeScript, Tailwind CSS 4 with shadcn/ui, Auth.js v5 with Microsoft Entra ID, Prisma 7 on Postgres (Neon), Cloudflare R2 for file bytes, Claude for reading and filing.
@@ -79,6 +83,7 @@ Uploads go to a staging key in the bucket and are copied to their final key when
 | Command | What it does |
 |---|---|
 | `pnpm org add <slug> --name <name> --domain <domain>` | Create a company and its default folders |
+| `pnpm org brand <slug> --logo <url> --color <hex>` | The company's logo and colour in the header (e.g. `--logo /brand/api-pharma-mark.png --color "#be272c"`) |
 | `pnpm user add <email> --org <slug> --role admin\|editor\|viewer` | Add someone to a company |
 | `pnpm user add <email> --owner` | Make someone an owner |
 | `pnpm user list` | Everyone, with their companies |

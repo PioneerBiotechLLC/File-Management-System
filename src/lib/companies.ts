@@ -25,6 +25,31 @@ export function brandColor(primaryColor: string | null): string | null {
   return primaryColor && BRAND_COLOR.test(primaryColor) ? primaryColor : null;
 }
 
+/** Sets the company's logo and colour, as shown in the header; an empty value clears it. */
+export async function setBrand(
+  prisma: Db,
+  input: { slug: string; logoUrl?: string | null; primaryColor?: string | null; actorEmail: string },
+): Promise<{ logoUrl: string | null; primaryColor: string | null }> {
+  const org = await prisma.organization.findUnique({ where: { slug: input.slug }, select: { id: true, logoUrl: true, primaryColor: true } });
+  if (!org) throw new UserError(`No company "${input.slug}".`);
+  const data: { logoUrl?: string | null; primaryColor?: string | null } = {};
+  if (input.logoUrl !== undefined) {
+    const url = input.logoUrl?.trim() ?? "";
+    if (url && !/^(https:\/\/|\/)[^\s"'<>]{1,500}$/.test(url)) throw new UserError("The logo must be an https:// address or a path on this site, like /brand/logo.png.");
+    data.logoUrl = url || null;
+  }
+  if (input.primaryColor !== undefined) {
+    const color = input.primaryColor?.trim() ?? "";
+    if (color && !BRAND_COLOR.test(color)) throw new UserError("The colour must be a hex value like #be272c.");
+    data.primaryColor = color ? color.toLowerCase() : null;
+  }
+  const after = await prisma.organization.update({ where: { id: org.id }, data, select: { logoUrl: true, primaryColor: true } });
+  await prisma.auditLog.create({
+    data: { orgId: org.id, userEmail: input.actorEmail, action: "org.brand", targetType: "organization", targetId: org.id, before: { logoUrl: org.logoUrl, primaryColor: org.primaryColor }, after },
+  });
+  return after;
+}
+
 export async function createCompany(
   prisma: Db,
   input: { slug: string; name: string; domain: string; actorEmail: string },

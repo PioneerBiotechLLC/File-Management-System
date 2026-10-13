@@ -3,28 +3,38 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* API Pharma: crimson on warm paper, ink text, warm grey lines. Values from api-pharma.net. */
 :root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --radius: 0.5rem;
+  --crimson: #be272c;
+  --crimson-deep: #9a1f23;
+  --ink: #1a1a1a;
+  --paper: #ffffff;
+  --surface: #faf9f5;
+  --sand: #f2efe8;
+  --line: #e2ddd3;
+  --stone: #6b675f;
+
+  --background: var(--surface);
+  --foreground: var(--ink);
+  --card: var(--paper);
+  --card-foreground: var(--ink);
+  --popover: var(--paper);
+  --popover-foreground: var(--ink);
+  --primary: var(--crimson);
+  --primary-foreground: #ffffff;
+  --secondary: var(--sand);
+  --secondary-foreground: var(--ink);
+  --muted: var(--sand);
+  --muted-foreground: var(--stone);
+  --accent: var(--sand);
+  --accent-foreground: var(--ink);
+  --destructive: var(--crimson-deep);
+  --border: var(--line);
+  --input: var(--line);
+  --ring: var(--crimson);
   /* Replaced per company with Organization.primaryColor. */
-  --brand: oklch(0.205 0 0);
+  --brand: var(--crimson);
 }
 
 @theme inline {
@@ -51,7 +61,8 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-brand: var(--brand);
-  --font-sans: "Segoe UI", system-ui, -apple-system, "Noto Sans Arabic", "Geeza Pro", sans-serif;
+  --font-sans: var(--font-source-sans), "Segoe UI", system-ui, -apple-system, "Noto Sans Arabic", "Geeza Pro", sans-serif;
+  --font-serif: var(--font-merriweather), Georgia, "Times New Roman", serif;
 }
 
 @layer base {
@@ -60,5 +71,9 @@
   }
   body {
     @apply bg-background text-foreground antialiased;
+  }
+  /* Page titles in the serif, as on the website; the body stays in the sans. */
+  h1 {
+    @apply font-serif tracking-tight;
   }
 }

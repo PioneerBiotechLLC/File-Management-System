@@ -228,6 +228,8 @@ export function describeEntry(entry: Entry, lookups: Lookups): LogPart[] {
 
     case "org.create":
       return ["Created the company"];
+    case "org.brand":
+      return ["Changed the company's logo or colour"];
     case "user.create":
       return [`Created an account for ${person}`];
     case "membership.add":

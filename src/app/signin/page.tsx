@@ -13,8 +13,9 @@ export default async function SignInPage({ searchParams }: { searchParams: Promi
   return (
     <main className="flex min-h-dvh items-center justify-center bg-muted/40 p-6">
       <Card className="w-full max-w-sm">
-        <CardHeader className="text-center">
-          <CardTitle className="text-2xl">Files</CardTitle>
+        <CardHeader className="items-center text-center">
+          <img src="/brand/api-pharma-mark.png" alt="API Pharma" width={96} height={85} className="mx-auto mb-2 h-20 w-auto" />
+          <CardTitle className="font-serif text-2xl">Files</CardTitle>
           <CardDescription>Your company&apos;s documents, filed and found with AI.</CardDescription>
         </CardHeader>
         <CardContent>

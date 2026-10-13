@@ -35,5 +35,5 @@ export default auth((req) => {
 export const config = {
   // Public: sign-in, the no-access page, Auth.js itself, the health check, cron jobs (which check
   // CRON_SECRET themselves) and static assets. Whole path segments only, so /signin-x is still protected.
-  matcher: ["/((?!(?:signin|no-access|api/health)(?:/|$)|api/auth/|api/cron/|_next/static|_next/image|favicon\\.ico|icon\\.svg).*)"],
+  matcher: ["/((?!(?:signin|no-access|api/health)(?:/|$)|api/auth/|api/cron/|_next/static|_next/image|favicon\\.ico|icon\\.png|brand/).*)"],
 };

@@ -1,7 +1,7 @@
 import { userInfo } from "node:os";
 import { Command, Option } from "commander";
 import { z } from "zod";
-import { createCompany, slugSchema } from "@/lib/companies";
+import { createCompany, setBrand, slugSchema } from "@/lib/companies";
 import { db, disconnect } from "@/lib/db";
 import { seedDefaultFolders } from "@/lib/folders";
 import { UserError } from "@/lib/errors";
@@ -39,6 +39,17 @@ org
   .action(async (slug: string, opts: { name: string; domain: string }) => {
     const created = await createCompany(db(), { slug, name: opts.name, domain: opts.domain, actorEmail: actor.email });
     console.log(`Created ${created.slug} with ${created.foldersCreated} folders.`);
+  });
+
+org
+  .command("brand <slug>")
+  .description("Set the company's logo and colour, shown in the header")
+  .option("--logo <url>", "an https:// address or a path on this site, e.g. /brand/api-pharma-mark.png; \"\" clears it")
+  .option("--color <hex>", 'e.g. "#be272c"; "" clears it')
+  .action(async (slug: string, opts: { logo?: string; color?: string }) => {
+    if (opts.logo === undefined && opts.color === undefined) throw new UserError("Give --logo, --color or both.");
+    const brand = await setBrand(db(), { slug, logoUrl: opts.logo, primaryColor: opts.color, actorEmail: actor.email });
+    console.log(`${slug}: logo ${brand.logoUrl ?? "(none)"}, colour ${brand.primaryColor ?? "(default)"}.`);
   });
 
 const user = program.command("user").description("Users and their companies");

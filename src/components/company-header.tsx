@@ -138,7 +138,7 @@ export function CompanyHeader({
 
 function CompanyMark({ company }: { company: Company & { logoUrl: string | null } }) {
   if (company.logoUrl) {
-    return <img src={company.logoUrl} alt="" className="size-6 rounded object-contain" />;
+    return <img src={company.logoUrl} alt="" className="size-8 object-contain" />;
   }
   return (
     <span className="bg-brand flex size-6 items-center justify-center rounded text-xs font-bold text-white">
