@@ -35,7 +35,7 @@ export default async function CompanyLayout({ params, children }: Props) {
         reviewCount={reviewCount}
       />
       <UploadProvider slug={org.slug} canUpload={can(role, "file.upload")} oneAtATime={role !== "admin"} maxMb={limitsEnv().FILES_MAX_MB}>
-        <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6">{children}</main>
+        <main className="mx-auto w-full max-w-[120rem] flex-1 px-4 py-6 sm:px-6">{children}</main>
       </UploadProvider>
     </div>
   );

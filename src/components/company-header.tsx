@@ -54,7 +54,7 @@ export function CompanyHeader({
   return (
     <header className="border-b">
       <div className="h-1 bg-brand" />
-      <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 sm:h-14 sm:flex-nowrap sm:py-0">
+      <div className="mx-auto flex max-w-[120rem] flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 sm:h-14 sm:flex-nowrap sm:px-6 sm:py-0">
         {companies.length > 1 ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
