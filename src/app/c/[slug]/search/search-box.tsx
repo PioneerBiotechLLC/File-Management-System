@@ -1,8 +1,8 @@
 "use client";
 
-import { Download, Loader2, Search, Sparkles } from "lucide-react";
+import { Download, Loader2, Sparkles } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { FileIcon } from "@/components/file-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,11 +13,11 @@ import { DOC_TYPES, DOC_TYPE_LABELS, type DocType } from "@/lib/doc-types";
 import { formatBytes } from "@/lib/file-names";
 import type { SearchFilters, SearchHit } from "@/lib/search";
 import { askAction, searchAction } from "./actions";
+import { AskBox, type SearchMode } from "./ask-box";
 
 type Folder = { id: string; path: string };
-type Initial = { q: string; folderId: string; docType: string; dateFrom: string; dateTo: string };
-
-const DEBOUNCE_MS = 350;
+type Initial = { q: string; ai: boolean; folderId: string; docType: string; dateFrom: string; dateTo: string };
+type Query = { q: string; mode: SearchMode; n: number };
 
 /** Renders « » marks from the database as highlights. */
 function Snippet({ text }: { text: string }) {
@@ -83,7 +83,9 @@ function Hit({ slug, hit, why, timezone }: { slug: string; hit: SearchHit; why?:
 }
 
 export function SearchBox({ slug, folders, timezone, aiAvailable, initial }: { slug: string; folders: Folder[]; timezone: string; aiAvailable: boolean; initial: Initial }) {
-  const [q, setQ] = useState(initial.q);
+  const [query, setQuery] = useState<Query | null>(
+    initial.q ? { q: initial.q, mode: initial.ai && aiAvailable ? "ai" : "keyword", n: 0 } : null,
+  );
   const [folderId, setFolderId] = useState(initial.folderId);
   const [docType, setDocType] = useState(initial.docType);
   const [dateFrom, setDateFrom] = useState(initial.dateFrom);
@@ -94,6 +96,8 @@ export function SearchBox({ slug, folders, timezone, aiAvailable, initial }: { s
   const [answer, setAnswer] = useState<AskResult | null>(null);
   const [asking, startAsk] = useTransition();
   const latest = useRef(0);
+  const asked = useRef(-1);
+  const [askedWith, setAskedWith] = useState<string | null>(null);
 
   const filters: SearchFilters = {
     folderId: folderId || null,
@@ -103,79 +107,68 @@ export function SearchBox({ slug, folders, timezone, aiAvailable, initial }: { s
   };
   const filterKey = JSON.stringify(filters);
   const hasFilters = Boolean(folderId || docType || dateFrom || dateTo);
+  const mode = query?.mode ?? "keyword";
 
-  // Keep the address in step so a search can be shared or reloaded.
+  // Keep the address in step so a search can be shared or reloaded; never with ai=1, so a reload costs nothing.
   useEffect(() => {
     const params = new URLSearchParams();
-    if (q) params.set("q", q);
+    if (query?.q) params.set("q", query.q);
     if (folderId) params.set("folder", folderId);
     if (docType) params.set("type", docType);
     if (dateFrom) params.set("from", dateFrom);
     if (dateTo) params.set("to", dateTo);
     const text = params.toString();
     window.history.replaceState(null, "", `/c/${slug}/search${text ? `?${text}` : ""}`);
-  }, [slug, q, folderId, docType, dateFrom, dateTo]);
+  }, [slug, query, folderId, docType, dateFrom, dateTo]);
 
-  const search = useCallback(async () => {
-    if (!q.trim() && !hasFilters) {
+  // Search (no AI): runs for each search and again when a filter changes.
+  useEffect(() => {
+    if (mode !== "keyword") return;
+    const q = query?.q ?? "";
+    if (!q && !hasFilters) {
       setHits(null);
-      setSearching(false);
       return;
     }
     const ticket = ++latest.current;
     setSearching(true);
-    const result = await searchAction(slug, { q, filters: JSON.parse(filterKey) as SearchFilters });
-    if (ticket !== latest.current) return;
-    setSearching(false);
-    if (result.ok) {
-      setHits(result.data.hits);
-      setError(null);
-    } else setError(result.error);
-  }, [slug, q, filterKey, hasFilters]);
+    void searchAction(slug, { q, filters: JSON.parse(filterKey) as SearchFilters }).then((result) => {
+      if (ticket !== latest.current) return;
+      setSearching(false);
+      if (result.ok) {
+        setHits(result.data.hits);
+        setError(null);
+      } else setError(result.error);
+    });
+  }, [slug, query, mode, filterKey, hasFilters]);
 
+  // AI search: once per press, with the filters chosen at that moment.
   useEffect(() => {
-    const timer = setTimeout(() => void search(), DEBOUNCE_MS);
-    return () => clearTimeout(timer);
-  }, [search]);
-
-  const askAi = () => {
-    if (!q.trim() || asking) return;
+    if (!query || query.mode !== "ai" || asked.current === query.n) return;
+    asked.current = query.n;
+    setAskedWith(filterKey);
     startAsk(async () => {
       setAnswer(null);
-      const result = await askAction(slug, { question: q });
-      if (result.ok) setAnswer(result.data);
-      else setError(result.error);
+      const result = await askAction(slug, { question: query.q, filters: JSON.parse(filterKey) as SearchFilters });
+      if (result.ok) {
+        setAnswer(result.data);
+        setError(null);
+      } else setError(result.error);
     });
+  }, [slug, query, filterKey]);
+
+  const submit = (q: string, next: SearchMode) => {
+    latest.current++;
+    setSearching(false);
+    setError(null);
+    if (next === "ai") setHits(null);
+    else setAnswer(null);
+    setQuery({ q, mode: next, n: (query?.n ?? 0) + 1 });
   };
 
   return (
     <div className="grid max-w-4xl gap-4">
-      <form
-        className="grid gap-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (aiAvailable) askAi();
-        }}
-      >
-        <div className="flex gap-2">
-          <div className="relative min-w-0 flex-1">
-            <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2" />
-            <Input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Search by company, product, number, amount… or ask a question"
-              className="h-11 pl-9 text-base"
-              autoFocus
-              aria-label="Search"
-            />
-          </div>
-          {aiAvailable && (
-            <Button type="submit" className="h-11" disabled={asking || !q.trim()}>
-              {asking ? <Loader2 className="animate-spin" /> : <Sparkles />}
-              Ask AI
-            </Button>
-          )}
-        </div>
+      <div className="grid gap-3">
+        <AskBox slug={slug} aiAvailable={aiAvailable} initial={initial.q} busy={asking ? "ai" : searching ? "keyword" : null} onSubmit={submit} />
         <div className="flex flex-wrap gap-2">
           <NativeSelect value={folderId} onChange={(e) => setFolderId(e.target.value)} aria-label="Folder" className="max-w-64">
             <option value="">All folders</option>
@@ -210,7 +203,10 @@ export function SearchBox({ slug, folders, timezone, aiAvailable, initial }: { s
             </Button>
           )}
         </div>
-      </form>
+        {mode === "ai" && answer && askedWith !== filterKey && (
+          <p className="text-muted-foreground text-xs">The filters changed. Press AI search again to use them.</p>
+        )}
+      </div>
 
       {error && (
         <p role="alert" className="text-destructive text-sm">
@@ -222,12 +218,12 @@ export function SearchBox({ slug, folders, timezone, aiAvailable, initial }: { s
         <section className="bg-muted/40 grid gap-3 rounded-xl border p-4">
           <h2 className="flex items-center gap-2 text-sm font-medium">
             <Sparkles className="text-brand size-4" />
-            AI answer
+            AI search
           </h2>
           {asking ? (
             <p className="text-muted-foreground flex items-center gap-2 text-sm">
               <Loader2 className="size-4 animate-spin" />
-              Searching the summaries… this takes a few seconds.
+              Reading the summaries… this takes 5–20 seconds.
             </p>
           ) : (
             answer && (
@@ -248,7 +244,7 @@ export function SearchBox({ slug, folders, timezone, aiAvailable, initial }: { s
         </section>
       )}
 
-      {hits !== null && (
+      {mode === "keyword" && hits !== null && (
         <section className="grid gap-2">
           <h2 className="text-muted-foreground flex items-center gap-2 text-sm">
             {searching && <Loader2 className="size-3.5 animate-spin" />}
@@ -263,9 +259,15 @@ export function SearchBox({ slug, folders, timezone, aiAvailable, initial }: { s
           )}
         </section>
       )}
-      {hits === null && !answer && !asking && (
+      {hits === null && !answer && !asking && !error && (
         <p className="text-muted-foreground rounded-lg border border-dashed p-10 text-center text-sm">
-          Results appear as you type. {aiAvailable ? "Press Enter or Ask AI for questions like “the insulin quotation we sent Gulf Pharmacy last spring, around 40k AED”." : ""}
+          <strong className="text-foreground font-medium">Search</strong> finds files by words and numbers in their summaries: a company, product, reference or amount. It uses no AI.
+          {aiAvailable && (
+            <>
+              {" "}
+              <strong className="text-foreground font-medium">AI search</strong> reads the summaries to answer questions like “the insulin quotation we sent Gulf Pharmacy last spring, around 40k AED”, with the details.
+            </>
+          )}
         </p>
       )}
     </div>

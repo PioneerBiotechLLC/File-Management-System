@@ -13,7 +13,7 @@ async function context(slug: string) {
   return { org, ctx: await fileContext(db(), { orgId: org.id, userId: user.id, email: user.email, role }) };
 }
 
-/** Instant search, as the person types. Each call is logged, merged with the previous keystrokes. */
+/** Keyword search, no AI. Each search is logged, merged with a refinement of the one before. */
 export async function searchAction(slug: string, input: { q: string; filters?: SearchFilters }) {
   return run(async () => {
     const { ctx } = await context(slug);
@@ -24,9 +24,10 @@ export async function searchAction(slug: string, input: { q: string; filters?: S
   });
 }
 
-export async function askAction(slug: string, input: { question: string }) {
+/** AI search: deeper, within the filters the person chose. */
+export async function askAction(slug: string, input: { question: string; filters?: SearchFilters }) {
   return run(async () => {
     const { org, ctx } = await context(slug);
-    return ask(db(), ctx, { name: org.name, timezone: org.timezone }, z.string().max(500).parse(input.question));
+    return ask(db(), ctx, { name: org.name, timezone: org.timezone }, z.string().max(500).parse(input.question), input.filters);
   });
 }

@@ -2,7 +2,7 @@
 
 A company document manager. People upload a file; Claude reads it, writes a short summary, pulls out key facts and files it in the right folder. Anyone with access finds files by asking in plain English or Arabic.
 
-Built in phases (see `prompt-file-manager.md`). **In place:** Microsoft sign-in, companies, roles and users, the filing system, an activity log, and AI filing: Claude reads each upload and drafts the summary, the uploader confirms it, Claude suggests the folder, the uploader confirms that too. Nothing is filed without a person confirming both. AI spend is capped per person and per company, with a Usage dashboard for admins. Search works over the confirmed summaries: instant as you type, or ask the AI a question. Operations and the full guide come next.
+Built in phases (see `prompt-file-manager.md`). **In place:** Microsoft sign-in, companies, roles and users, the filing system, an activity log, and AI filing: Claude reads each upload and drafts the summary, the uploader confirms it, Claude suggests the folder, the uploader confirms that too. Nothing is filed without a person confirming both. AI spend is capped per person and per company, with a Usage dashboard for admins. Search works over the confirmed summaries: by keyword, or with AI search for questions. Operations and the full guide come next.
 
 ## How filing works
 
@@ -20,9 +20,11 @@ Built in phases (see `prompt-file-manager.md`). **In place:** Microsoft sign-in,
 
 Search looks only at what people confirmed: the name, title, summary, type, date, parties, reference numbers, amounts, products and tags. Nothing from a file's contents is indexed. Access is applied in the database query, so a file in a restricted folder never appears for someone without access, and the AI never sees it either.
 
-- **Instant search** (`/c/<slug>/search`, or the box in the header) updates as you type. Letters and digits are matched separately, so "PO-4512", "PO#4512" and "4512" all find the same order; Arabic is folded so "الإنسولين" and "انسولين" meet. It tries every word first, then the identifying numbers alone, then any word. Filters: folder (with subfolders), type, date range.
-- **Ask AI** (Enter or the button) is for questions: "the insulin quotation we sent Gulf Pharmacy last spring, around 40k AED". The light model turns the question into searches with amount and date ranges, reads the best summaries and answers in a sentence with the files as cards and why each matches. It can cite only files the search returned. At most 4 lookups per question; `FILES_AI_SEARCHES_PER_USER_PER_DAY` questions per person per day (default 50), plus the spend caps below.
-- Every search is logged (one entry per search while typing); admins see them in Log under Searches.
+The search box sits at the top of the Files page (inside a folder it searches that folder) and of `/c/<slug>/search`, with two buttons. Enter is Search, Ctrl/⌘+Enter is AI search.
+
+- **Search** uses no AI. Letters and digits are matched separately, so "PO-4512", "PO#4512" and "4512" all find the same order; Arabic is folded so "الإنسولين" and "انسولين" meet. It tries every word first, then the identifying numbers alone, then any word. Filters: folder (with subfolders), type, date range.
+- **AI search** is for questions: "the insulin quotation we sent Gulf Pharmacy last spring, around 40k AED". The light model turns the question into searches with amount and date ranges, reads the likeliest summaries in full and answers in a short paragraph with the details (dates, amounts, references, the company), the files as cards and why each matches. It keeps the filters chosen on the search page and can cite only files the search returned. At most 6 lookups per question, under $0.03 a question; `FILES_AI_SEARCHES_PER_USER_PER_DAY` questions per person per day (default 50), plus the spend caps below. A reload never repeats an AI search.
+- Every search is logged; admins see them in Log under Searches.
 - `pnpm index rebuild [--org <slug>]` rebuilds the search entries, needed once after the first deploy of search.
 
 ## AI costs and limits

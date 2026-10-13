@@ -101,14 +101,27 @@ describe.skipIf(!TEST_DATABASE_URL)("ask: AI search (database)", () => {
     expect(log).toMatchObject({ userEmail: "sara@api-pharma.net", after: { question: expect.stringContaining("Gulf Pharmacy"), files: [quoteId], calls: 2 } });
   });
 
-  it("forces an answer after four tool calls", async () => {
-    for (let i = 0; i < 4; i++) callClaude.mockResolvedValueOnce(toolUse("search_files", { query: `try ${i}` }, `toolu_${i}`));
+  it("forces an answer after six tool calls", async () => {
+    for (let i = 0; i < 6; i++) callClaude.mockResolvedValueOnce(toolUse("search_files", { query: `try ${i}` }, `toolu_${i}`));
     callClaude.mockResolvedValueOnce(toolUse("answer", { text: "Nothing matched.", files: [] }, "toolu_final"));
     const result = await ask(prisma, await sara(), company, "something obscure");
-    expect(result).toMatchObject({ text: "Nothing matched.", files: [], calls: 4 });
-    const last = callClaude.mock.calls[4]![2] as { tool_choice: unknown; tools: { name: string }[] };
+    expect(result).toMatchObject({ text: "Nothing matched.", files: [], calls: 6 });
+    const last = callClaude.mock.calls[6]![2] as { tool_choice: unknown; tools: { name: string }[] };
     expect(last.tool_choice).toEqual({ type: "tool", name: "answer" });
     expect(last.tools.map((t) => t.name)).toEqual(["answer"]);
+  });
+
+  it("keeps the filters the person chose in every search, whatever the model asks for", async () => {
+    callClaude
+      .mockResolvedValueOnce(toolUse("search_files", { query: "insulin gulf" }))
+      .mockResolvedValueOnce(toolUse("answer", { text: "Nothing.", files: [] }, "toolu_2"));
+    await ask(prisma, await sara(), company, "insulin", { folderId: null, docType: "invoice", dateFrom: null, dateTo: null });
+
+    const { messages } = callClaude.mock.calls[0]![2] as { messages: { content: string }[] };
+    expect(messages[0]!.content).toContain("limited the search to: type Invoice.");
+    // The model did not ask for invoices, but the search kept the person's filter, so the quotation is left out.
+    const second = callClaude.mock.calls[1]![2] as { messages: { role: string; content: unknown }[] };
+    expect(JSON.stringify(second.messages.at(-1)!.content)).toContain("No documents matched");
   });
 
   it("treats plain text as the answer", async () => {
@@ -124,7 +137,7 @@ describe.skipIf(!TEST_DATABASE_URL)("ask: AI search (database)", () => {
     vi.stubEnv("FILES_AI_SEARCHES_PER_USER_PER_DAY", "10");
 
     callClaude.mockRejectedValueOnce(new AiLimitError("user_day", "You have reached your daily AI limit ($2.00)."));
-    await expect(ask(prisma, await sara(), company, "third")).rejects.toThrow(/daily AI limit.*Instant search still works/);
+    await expect(ask(prisma, await sara(), company, "third")).rejects.toThrow(/daily AI limit.*Search \(without AI\) still works/);
     expect(await prisma.auditLog.findFirst({ where: { action: "search.ask", after: { path: ["question"], equals: "third" } } })).toMatchObject({ after: { error: expect.stringContaining("daily AI limit") } });
 
     callClaude.mockRejectedValueOnce(new Error("overloaded"));

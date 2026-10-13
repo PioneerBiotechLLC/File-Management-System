@@ -12,6 +12,7 @@ import { fileContext, listFiles, type ListFilesOptions } from "@/lib/files";
 import { formatBytes } from "@/lib/file-names";
 import { can } from "@/lib/permissions";
 import { companyContext } from "@/lib/session";
+import { AskBox } from "./search/ask-box";
 
 type SearchParams = { folder?: string; sort?: string; dir?: string; page?: string };
 
@@ -71,6 +72,13 @@ export default async function CompanyHome({ params, searchParams }: { params: Pr
       </aside>
 
       <section className="grid min-w-0 content-start gap-4">
+        <AskBox
+          slug={slug}
+          aiAvailable={Boolean(process.env.ANTHROPIC_API_KEY?.trim())}
+          folder={folder ? { id: folder.id, name: folder.name } : undefined}
+          className="max-w-3xl"
+        />
+
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <nav aria-label="Breadcrumb" className="text-muted-foreground flex flex-wrap items-center gap-1 text-sm">

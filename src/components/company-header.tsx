@@ -48,6 +48,9 @@ export function CompanyHeader({
     nav.push({ href: `${base}/settings`, label: "Settings", active: pathname.startsWith(`${base}/settings`) });
   }
 
+  // The Files page and the search page have the big search box.
+  const showSearch = pathname !== base && !pathname.startsWith(`${base}/search`);
+
   return (
     <header className="border-b">
       <div className="h-1 bg-brand" />
@@ -100,7 +103,7 @@ export function CompanyHeader({
           ))}
         </nav>
 
-        <form action={`${base}/search`} className="relative ml-auto hidden sm:block">
+        <form action={`${base}/search`} className={cn("relative ml-auto hidden", showSearch && "sm:block")}>
           <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
           <input
             type="search"
@@ -111,7 +114,7 @@ export function CompanyHeader({
           />
         </form>
 
-        <div>
+        <div className={cn(!showSearch && "ml-auto")}>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="sm" className="max-w-56 truncate">

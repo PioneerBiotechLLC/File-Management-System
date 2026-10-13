@@ -5,7 +5,7 @@ import { SearchBox } from "./search-box";
 
 export const metadata = { title: "Search" };
 
-type SearchParams = { q?: string; folder?: string; type?: string; from?: string; to?: string };
+type SearchParams = { q?: string; ai?: string; folder?: string; type?: string; from?: string; to?: string };
 
 export default async function SearchPage({ params, searchParams }: { params: Promise<{ slug: string }>; searchParams: Promise<SearchParams> }) {
   const { slug } = await params;
@@ -20,11 +20,13 @@ export default async function SearchPage({ params, searchParams }: { params: Pro
 
   return (
     <SearchBox
+      // A new search from the Files page or the header starts afresh.
+      key={`${query.q ?? ""}|${query.ai ?? ""}|${query.folder ?? ""}`}
       slug={slug}
       folders={folders}
       timezone={org.timezone}
       aiAvailable={Boolean(ANTHROPIC_API_KEY?.trim())}
-      initial={{ q: query.q ?? "", folderId: query.folder ?? "", docType: query.type ?? "", dateFrom: query.from ?? "", dateTo: query.to ?? "" }}
+      initial={{ q: query.q ?? "", ai: query.ai === "1", folderId: query.folder ?? "", docType: query.type ?? "", dateFrom: query.from ?? "", dateTo: query.to ?? "" }}
     />
   );
 }
