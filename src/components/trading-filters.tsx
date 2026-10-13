@@ -35,7 +35,7 @@ export function TradingFilters({ slug, browse }: { slug: string; browse: BrowseR
   const party = browse.parties.find((p) => p.value === filter.partyId);
 
   return (
-    <div className="flex flex-wrap items-center gap-2" aria-busy={pending}>
+    <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center" aria-busy={pending}>
       <NativeSelect value={filter.year ?? ""} onChange={(e) => go({ year: e.target.value })} aria-label="Year">
         <option value="">All years</option>
         {browse.years.map((y) => (
@@ -60,7 +60,7 @@ export function TradingFilters({ slug, browse }: { slug: string; browse: BrowseR
           </option>
         ))}
       </NativeSelect>
-      <NativeSelect value={filter.partyId ?? ""} onChange={(e) => go({ party: e.target.value })} aria-label="Company" className="max-w-72" dir="auto">
+      <NativeSelect value={filter.partyId ?? ""} onChange={(e) => go({ party: e.target.value })} aria-label="Company" className="col-span-2 sm:col-span-1 sm:max-w-72" dir="auto">
         <option value="">All companies</option>
         {browse.parties.map((p) => (
           <option key={p.value} value={p.value}>

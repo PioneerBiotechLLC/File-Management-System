@@ -54,7 +54,7 @@ export function CompanyHeader({
   return (
     <header className="border-b">
       <div className="h-1 bg-brand" />
-      <div className="mx-auto flex h-14 max-w-7xl items-center gap-4 px-4">
+      <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 sm:h-14 sm:flex-nowrap sm:py-0">
         {companies.length > 1 ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -83,13 +83,13 @@ export function CompanyHeader({
           </Link>
         )}
 
-        <nav className="flex gap-1">
+        <nav className="order-last -mx-4 flex w-[calc(100%+2rem)] gap-1 overflow-x-auto px-4 pb-1 sm:order-none sm:mx-0 sm:w-auto sm:overflow-visible sm:px-0 sm:pb-0">
           {nav.map((item) => (
             <Link
               key={item.href}
               href={item.href}
               className={cn(
-                "rounded-md px-3 py-1.5 text-sm",
+                "shrink-0 rounded-md px-3 py-1.5 text-sm",
                 item.active ? "bg-accent font-medium" : "text-muted-foreground hover:text-foreground",
               )}
             >
@@ -114,7 +114,14 @@ export function CompanyHeader({
           />
         </form>
 
-        <div className={cn(!showSearch && "ml-auto")}>
+        <div className="ml-auto flex items-center gap-1 sm:ml-0">
+          {showSearch && (
+            <Button asChild variant="ghost" size="icon" className="sm:hidden">
+              <Link href={`${base}/search`} aria-label="Search files">
+                <Search />
+              </Link>
+            </Button>
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="sm" className="max-w-56 truncate">

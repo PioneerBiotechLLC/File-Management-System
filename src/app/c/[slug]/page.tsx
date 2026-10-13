@@ -2,6 +2,7 @@ import { ChevronRight, ChevronsUpDown, Lock } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { FileIcon } from "@/components/file-icon";
+import { FolderDrawer } from "@/components/folder-drawer";
 import { FolderTree } from "@/components/folder-tree";
 import { TradingFilters } from "@/components/trading-filters";
 import { UploadButton } from "@/components/upload-buttons";
@@ -68,13 +69,15 @@ export default async function CompanyHome({ params, searchParams }: { params: Pr
   );
 
   return (
-    <div className="grid gap-6 md:grid-cols-[16rem_1fr]">
-      <aside className="max-h-72 overflow-y-auto md:max-h-none">
+    <div className="grid gap-6 md:grid-cols-[16rem_minmax(0,1fr)]">
+      <aside>
+        <FolderDrawer current={folder ? folder.name : "All recent files"}>
         <FolderTree
           slug={slug}
           selectedId={folderId}
           folders={treeFolders.map((f) => ({ id: f.id, parentId: f.parentId, name: f.name, nameAr: f.nameAr, access: f.access }))}
         />
+        </FolderDrawer>
       </aside>
 
       <section className="grid min-w-0 content-start gap-4">
@@ -139,12 +142,14 @@ export default async function CompanyHome({ params, searchParams }: { params: Pr
               <TableHeader>
                 <TableRow>
                   <SortHead column="name">Name</SortHead>
-                  {!folder && <TableHead>Folder</TableHead>}
-                  <SortHead column="createdAt">Added</SortHead>
-                  <SortHead column="sizeBytes" className="text-right">
+                  {!folder && <TableHead className="hidden md:table-cell">Folder</TableHead>}
+                  <SortHead column="createdAt" className="hidden sm:table-cell">
+                    Added
+                  </SortHead>
+                  <SortHead column="sizeBytes" className="hidden text-right sm:table-cell">
                     Size
                   </SortHead>
-                  <TableHead>By</TableHead>
+                  <TableHead className="hidden md:table-cell">By</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -162,17 +167,21 @@ export default async function CompanyHome({ params, searchParams }: { params: Pr
                               {f.title && f.title !== f.name ? f.title : (f.summary ?? "").split("\n")[0]}
                             </span>
                           )}
+                          {/* The columns that do not fit a phone, as one line under the name. */}
+                          <span dir="auto" className="text-muted-foreground block truncate text-xs md:hidden">
+                            {[!folder && f.folderId ? ctx.paths.get(f.folderId) : null, dateFormat.format(f.createdAt), formatBytes(f.sizeBytes)].filter(Boolean).join(" · ")}
+                          </span>
                         </span>
                       </Link>
                     </TableCell>
                     {!folder && (
-                      <TableCell className="text-muted-foreground">
+                      <TableCell className="text-muted-foreground hidden md:table-cell">
                         {f.folderId ? (ctx.paths.get(f.folderId) ?? "") : <Badge variant="outline">Unfiled</Badge>}
                       </TableCell>
                     )}
-                    <TableCell className="text-muted-foreground">{dateFormat.format(f.createdAt)}</TableCell>
-                    <TableCell className="text-muted-foreground text-right">{formatBytes(f.sizeBytes)}</TableCell>
-                    <TableCell className="text-muted-foreground max-w-40 truncate">{f.uploader.name ?? f.uploader.email}</TableCell>
+                    <TableCell className="text-muted-foreground hidden sm:table-cell">{dateFormat.format(f.createdAt)}</TableCell>
+                    <TableCell className="text-muted-foreground hidden text-right sm:table-cell">{formatBytes(f.sizeBytes)}</TableCell>
+                    <TableCell className="text-muted-foreground hidden max-w-40 truncate md:table-cell">{f.uploader.name ?? f.uploader.email}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
