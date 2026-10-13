@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import type { PrismaClient } from "@/generated/prisma/client";
 import type { Role } from "@/generated/prisma/enums";
 import { TEST_DATABASE_URL, freshDatabase } from "@/test/database";
+import { addTestFolders } from "@/test/folders";
 
 const stored = new Map<string, number>();
 const removed: string[] = [];
@@ -65,6 +66,7 @@ describe.skipIf(!TEST_DATABASE_URL)("files and folders (database)", () => {
   beforeAll(async () => {
     ({ prisma, drop } = await freshDatabase());
     orgId = (await createCompany(prisma, { slug: "api-pharma", name: "API Pharma", domain: "api-pharma.net", actorEmail: "t" })).id;
+    await addTestFolders(prisma, orgId);
     otherOrgId = (await createCompany(prisma, { slug: "beta-co", name: "Beta", domain: "beta.example", actorEmail: "t" })).id;
     for (const who of ["admin", "sara", "omar", "vic", "hr"] as const) {
       ({ userId: ids[who]! } = await addMember(prisma, { orgId, email: `${who}@api-pharma.net`, role: roles[who], actor: { email: "t" } }));

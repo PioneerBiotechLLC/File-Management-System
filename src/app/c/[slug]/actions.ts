@@ -6,6 +6,8 @@ import { run } from "@/lib/action-result";
 import { db } from "@/lib/db";
 import * as files from "@/lib/files";
 import * as intake from "@/lib/intake";
+import type { Destination } from "@/lib/file-kinds";
+import { destinationInput, fileTo } from "@/lib/parties";
 import { companyContext } from "@/lib/session";
 
 /** The company, user and role come from the session; the slug only says which company is open. */
@@ -61,6 +63,17 @@ export async function moveFileAction(slug: string, input: { fileId: string; fold
   return run(async () => {
     const parsed = z.object({ fileId: id, folderId: id }).parse(input);
     await files.moveFile(db(), await context(slug), parsed);
+    refresh(slug);
+  });
+}
+
+/** Files or moves a file to a company folder, or to `<year> / Customers|Suppliers / <company> / <kind>`. */
+export async function fileToAction(slug: string, input: { fileId: string; destination: Destination; seenAs?: string | null }) {
+  return run(async () => {
+    const parsed = z
+      .object({ fileId: id, destination: destinationInput, seenAs: z.string().max(200).nullish() })
+      .parse(input);
+    await fileTo(db(), await context(slug), parsed);
     refresh(slug);
   });
 }

@@ -106,6 +106,7 @@ const REVIEW_SELECT = {
   processingStartedAt: true,
   summaryConfirmedAt: true,
   suggestedFolderId: true,
+  suggestedTrading: true,
   filingConfidence: true,
   filingReason: true,
 } satisfies Prisma.StoredFileSelect;
@@ -509,24 +510,32 @@ export async function downloadTarget(
 // Changing
 // ---------------------------------------------------------------------------------------------
 
-/**
- * Files an unfiled file into a folder, or moves a filed one. Unfiled files go through the Review
- * permission and need a confirmed summary first, so every filed file has one.
- */
-export async function moveFile(prisma: Db, ctx: FileContext, input: { fileId: string; folderId: string }): Promise<void> {
-  const file = await findFile(prisma, ctx, input.fileId);
+/** Whether this person may file or move this file at all, wherever it goes. Returns the file. */
+export async function checkCanMove(prisma: Db, ctx: FileContext, fileId: string) {
+  const file = await findFile(prisma, ctx, fileId);
   const ownsFile = file.uploadedBy === ctx.userId;
   const allowed = file.folderId === null ? can(ctx.role, "review.accept") && (ownsFile || ctx.role === "admin") : can(ctx.role, "file.move", { ownsFile });
   if (!allowed) throw new UserError("You can only move files you uploaded.");
   assertCanChangeIn(ctx, file.folderId);
-  if (!ctx.writable.has(input.folderId)) throw new UserError("You cannot file into that folder.");
   if (file.folderId === null && !file.summaryConfirmedAt) throw new UserError("Confirm the summary before filing.");
+  return file;
+}
+
+/**
+ * Files an unfiled file into a folder, or moves a filed one. Unfiled files go through the Review
+ * permission and need a confirmed summary first, so every filed file has one. Filing into a
+ * customer or supplier folder records that company on the file (see parties.fileTo).
+ */
+export async function moveFile(prisma: Db, ctx: FileContext, input: { fileId: string; folderId: string }): Promise<void> {
+  const file = await checkCanMove(prisma, ctx, input.fileId);
+  if (!ctx.writable.has(input.folderId)) throw new UserError("You cannot file into that folder.");
   if (file.folderId === input.folderId) return;
+  const partyId = ctx.folders.find((f) => f.id === input.folderId)?.partyId ?? null;
 
   await prisma.$transaction([
     prisma.storedFile.update({
       where: { id: file.id },
-      data: { folderId: input.folderId, status: "ready", filedBy: ctx.email, processingStartedAt: null },
+      data: { folderId: input.folderId, partyId, status: "ready", filedBy: ctx.email, processingStartedAt: null },
     }),
     prisma.auditLog.create({
       data: {

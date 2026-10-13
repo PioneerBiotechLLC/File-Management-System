@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { TEST_DATABASE_URL, freshDatabase } from "@/test/database";
+import { addTestFolders } from "@/test/folders";
 import { createCompany } from "./companies";
 import { UserError } from "./errors";
 import { fileContext } from "./files";
@@ -48,6 +49,7 @@ describe.skipIf(!TEST_DATABASE_URL)("search (database)", () => {
   beforeAll(async () => {
     ({ prisma, drop } = await freshDatabase());
     orgId = (await createCompany(prisma, { slug: "api-pharma", name: "API Pharma", domain: "api-pharma.net", actorEmail: "t" })).id;
+    await addTestFolders(prisma, orgId);
     otherOrgId = (await createCompany(prisma, { slug: "beta-co", name: "Beta", domain: "beta.example", actorEmail: "t" })).id;
     for (const [who, role] of [["admin", "admin"], ["sara", "editor"], ["vic", "viewer"], ["hr", "editor"]] as const) {
       ({ userId: ids[who]! } = await addMember(prisma, { orgId, email: `${who}@api-pharma.net`, role, actor: { email: "t" } }));

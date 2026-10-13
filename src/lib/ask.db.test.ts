@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { TEST_DATABASE_URL, freshDatabase } from "@/test/database";
+import { addTestFolders } from "@/test/folders";
 
 const callClaude = vi.fn();
 
@@ -38,6 +39,7 @@ describe.skipIf(!TEST_DATABASE_URL)("ask: AI search (database)", () => {
   beforeAll(async () => {
     ({ prisma, drop } = await freshDatabase());
     orgId = (await createCompany(prisma, { slug: "api-pharma", name: company.name, domain: "api-pharma.net", actorEmail: "t" })).id;
+    await addTestFolders(prisma, orgId);
     ({ userId: saraId } = await addMember(prisma, { orgId, email: "sara@api-pharma.net", role: "editor", actor: { email: "t" } }));
     ({ userId: vicId } = await addMember(prisma, { orgId, email: "vic@api-pharma.net", role: "viewer", actor: { email: "t" } }));
     const folders = await prisma.folder.findMany({ where: { orgId }, include: { parent: true } });

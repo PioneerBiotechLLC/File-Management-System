@@ -108,8 +108,10 @@ export type AskResult = {
 
 function systemFor(ctx: FileContext, company: { name: string; timezone: string }, now: Date): Anthropic.Beta.Messages.BetaTextBlockParam[] {
   const today = new Intl.DateTimeFormat("en-CA", { timeZone: company.timezone, dateStyle: "short" }).format(now);
+  // Company folders, years and Customers/Suppliers; a customer is found by name, not by folder.
   const folders = ctx.folders
-    .filter((f) => ctx.visible.has(f.id))
+    .filter((f) => ctx.visible.has(f.id) && (f.kind === "regular" || f.kind === "year" || f.kind === "side"))
+    .slice(0, 300)
     .map((f) => `- ${f.id} | ${ctx.paths.get(f.id) ?? f.name}`)
     .join("\n");
   return [

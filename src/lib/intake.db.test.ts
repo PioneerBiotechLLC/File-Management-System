@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { TEST_DATABASE_URL, freshDatabase } from "@/test/database";
+import { addTestFolders } from "@/test/folders";
 
 const stored = new Map<string, Uint8Array>();
 const analyzeFile = vi.fn();
@@ -42,6 +43,18 @@ const { UserError } = await import("./errors");
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const company = { name: "API Pharma", domain: "api-pharma.net", timezone: "Asia/Dubai" };
 
+/** A filing answer that names a company folder. */
+const folderFiling = (folderId: string | null | undefined, confidence: number, reason: string) => ({
+  placement: "folder" as const,
+  side: null,
+  partyId: null,
+  partyName: null,
+  docKind: null,
+  folderId: folderId ?? null,
+  confidence,
+  reason,
+});
+
 const analysis = (overrides: Record<string, unknown> = {}) => ({
   readable: true,
   problem: null,
@@ -52,7 +65,7 @@ const analysis = (overrides: Record<string, unknown> = {}) => ({
   language: "en",
   facts: { parties: ["API Pharma", "Gulf Pharmacy"], references: [{ kind: "quotation", value: "QT-2291" }], amounts: [{ value: 1250.5, currency: "AED" }], products: ["Insulin glargine 100 IU/ml"] },
   tags: ["gulf pharmacy", "insulin"],
-  filing: { folderId: null, confidence: 0, reason: "Quotation we sent to a customer" },
+  filing: folderFiling(null, 0, "Quotation we sent to a customer"),
   ...overrides,
 });
 
@@ -81,6 +94,7 @@ describe.skipIf(!TEST_DATABASE_URL)("intake: AI reading, summary confirmation an
   beforeAll(async () => {
     ({ prisma, drop } = await freshDatabase());
     orgId = (await createCompany(prisma, { slug: "api-pharma", name: company.name, domain: company.domain, actorEmail: "t" })).id;
+    await addTestFolders(prisma, orgId);
     ({ userId: ids.admin! } = await addMember(prisma, { orgId, email: "admin@api-pharma.net", role: "admin", actor: { email: "t" } }));
     ({ userId: ids.sara! } = await addMember(prisma, { orgId, email: "sara@api-pharma.net", role: "editor", actor: { email: "t" } }));
     for (const f of await prisma.folder.findMany({ where: { orgId }, include: { parent: true } })) {
@@ -98,7 +112,7 @@ describe.skipIf(!TEST_DATABASE_URL)("intake: AI reading, summary confirmation an
 
   it("reads the upload, stores the draft and the suggestion, and logs it", async () => {
     const fileId = await upload("sara", "QT-2291.pdf", "quotation one");
-    analyzeFile.mockResolvedValue({ status: "analyzed", readStatus: "full", model: "claude-sonnet-5-5", analysis: analysis({ filing: { folderId: folder["Sales/Quotations"], confidence: 0.9, reason: "Quotation we sent" } }) });
+    analyzeFile.mockResolvedValue({ status: "analyzed", readStatus: "full", model: "claude-sonnet-5-5", analysis: analysis({ filing: folderFiling(folder["Sales/Quotations"], 0.9, "Quotation we sent") }) });
     const ctx = await ctxFor("sara");
 
     expect(await intake.readUpload(prisma, ctx, company, fileId)).toEqual({ status: "read" });
@@ -119,7 +133,7 @@ describe.skipIf(!TEST_DATABASE_URL)("intake: AI reading, summary confirmation an
 
   it("files only after the summary is confirmed; an unchanged summary reuses the suggestion, an edited one asks again", async () => {
     const fileId = await upload("sara", "QT-2292.pdf", "quotation two");
-    analyzeFile.mockResolvedValue({ status: "analyzed", readStatus: "full", model: "m", analysis: analysis({ filing: { folderId: folder["Sales/Quotations"], confidence: 0.9, reason: "Quotation we sent" } }) });
+    analyzeFile.mockResolvedValue({ status: "analyzed", readStatus: "full", model: "m", analysis: analysis({ filing: folderFiling(folder["Sales/Quotations"], 0.9, "Quotation we sent") }) });
     const ctx = await ctxFor("sara");
     await intake.readUpload(prisma, ctx, company, fileId);
 
@@ -128,14 +142,14 @@ describe.skipIf(!TEST_DATABASE_URL)("intake: AI reading, summary confirmation an
     const draft = intake.summaryToForm(await fileRow(fileId));
     expect(draft).toMatchObject({ title: "Quotation QT-2291", amounts: "1250.5 AED", references: "quotation QT-2291", parties: "API Pharma\nGulf Pharmacy", docDate: "2026-03-15" });
     const unchanged = await intake.confirmSummary(prisma, ctx, company, { fileId, ...draft });
-    expect(unchanged.suggestion).toMatchObject({ folderId: folder["Sales/Quotations"], path: "Sales / Quotations", reason: "Quotation we sent" });
+    expect(unchanged.suggestion).toMatchObject({ destination: { kind: "folder", folderId: folder["Sales/Quotations"] }, path: "Sales / Quotations", reason: "Quotation we sent" });
     expect(suggestFolder).not.toHaveBeenCalled();
     expect(await fileRow(fileId)).toMatchObject({ summaryConfirmedBy: "sara@api-pharma.net", status: "needs_review" });
     expect(await prisma.auditLog.findFirst({ where: { action: "file.summary", targetId: fileId } })).toMatchObject({ after: { source: "ai", edited: false } });
 
-    suggestFolder.mockResolvedValue({ folderId: folder["Purchasing/Supplier Quotations"], confidence: 0.7, reason: "A supplier's quotation" });
+    suggestFolder.mockResolvedValue(folderFiling(folder["Purchasing/Supplier Quotations"], 0.7, "A supplier's quotation"));
     const edited = await intake.confirmSummary(prisma, ctx, company, { fileId, ...draft, title: "Supplier quotation from Al Noor" });
-    expect(edited.suggestion).toMatchObject({ folderId: folder["Purchasing/Supplier Quotations"], path: "Purchasing / Supplier Quotations" });
+    expect(edited.suggestion).toMatchObject({ destination: { kind: "folder", folderId: folder["Purchasing/Supplier Quotations"] }, path: "Purchasing / Supplier Quotations" });
     expect(suggestFolder).toHaveBeenCalledTimes(1);
     // The AI's second look only sees the confirmed summary, never the file.
     expect(JSON.stringify(suggestFolder.mock.calls[0]![2])).toContain("Supplier quotation from Al Noor");

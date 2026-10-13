@@ -42,6 +42,21 @@ enum AiPurpose {
   file_search
 }
 
+enum PartySide {
+  customer
+  supplier
+}
+
+/// regular: made by an admin or seeded. The rest are created when a document is filed:
+/// year (2026) / side (Customers, Suppliers) / party (Gulf Pharmacy) / doc (Invoices).
+enum FolderKind {
+  regular
+  year
+  side
+  party
+  doc
+}
+
 model Organization {
   id           String   @id @default(cuid())
   name         String
@@ -60,6 +75,27 @@ model Organization {
   files       StoredFile[]
   auditLogs   AuditLog[]
   aiUsage     AiUsage[]
+  parties     Party[]
+}
+
+/// A customer or supplier. A company that is both is two parties, one per side.
+model Party {
+  id        String    @id @default(cuid())
+  orgId     String
+  side      PartySide
+  name      String
+  /// The name folded for matching (lowercase, no punctuation or LLC/FZE-style suffixes).
+  key       String
+  /// Other spellings seen on documents, folded the same way.
+  aliases   String[]  @default([])
+  createdBy String
+  createdAt DateTime  @default(now())
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  folders Folder[]
+  files   StoredFile[]
+
+  @@unique([orgId, side, key])
 }
 
 model AppUser {
@@ -154,8 +190,18 @@ model Folder {
   isActive    Boolean      @default(true)
   createdBy   String
   createdAt   DateTime     @default(now())
+  kind        FolderKind   @default(regular)
+  /// Set on year folders and everything under them.
+  year        Int?
+  /// Set on side, party and doc folders.
+  side        PartySide?
+  /// Set on party and doc folders.
+  partyId     String?
+  /// Set on doc folders: an id from file-kinds.ts DOC_KINDS.
+  docKind     String?
 
   org            Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  party          Party?        @relation(fields: [partyId], references: [id], onDelete: SetNull)
   parent         Folder?       @relation("FolderTree", fields: [parentId], references: [id], onDelete: NoAction)
   children       Folder[]      @relation("FolderTree")
   grants         FolderGrant[]
@@ -210,6 +256,10 @@ model StoredFile {
   facts               Json            @default("{}")
   tags                String[]        @default([])
   suggestedFolderId   String?
+  /// The AI's customer/supplier suggestion: { side, partyId, partyName, docKind }.
+  suggestedTrading    Json?
+  /// The customer or supplier the file is filed under, if any.
+  partyId             String?
   filingConfidence    Float?
   /// One short sentence shown to the user.
   filingReason        String?
@@ -235,9 +285,11 @@ model StoredFile {
   folder          Folder?       @relation("FileFolder", fields: [folderId], references: [id], onDelete: SetNull)
   suggestedFolder Folder?       @relation("FileSuggestedFolder", fields: [suggestedFolderId], references: [id], onDelete: SetNull)
   uploader        AppUser       @relation(fields: [uploadedBy], references: [id])
+  party           Party?        @relation(fields: [partyId], references: [id], onDelete: SetNull)
   versions        FileVersion[]
 
   @@index([orgId, folderId, deletedAt])
+  @@index([orgId, partyId])
   @@index([orgId, status])
   @@index([orgId, sha256])
   @@index([searchVector], type: Gin)

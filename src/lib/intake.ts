@@ -1,13 +1,15 @@
 import { z } from "zod";
-import { analyzeFile, factsInput, storedFacts, type Facts } from "@/lib/analysis";
-import type { Prisma } from "@/generated/prisma/client";
+import { analyzeFile, factsInput, filingIsUsable, storedFacts, type Facts, type Filing } from "@/lib/analysis";
+import { Prisma } from "@/generated/prisma/client";
 import type { Db } from "@/lib/db";
 import { DOC_TYPES, type DocType } from "@/lib/doc-types";
 import { aiEnv, limitsEnv } from "@/lib/env";
 import { UserError } from "@/lib/errors";
 import { extract } from "@/lib/extract";
 import type { FileContext } from "@/lib/files";
+import type { FilingSuggestion } from "@/lib/file-kinds";
 import { suggestFolder, summaryChanged, type ConfirmedSummary } from "@/lib/filing";
+import { filingYear, listParties, suggestionFor, type PartyRow, type StoredTrading } from "@/lib/parties";
 import { can } from "@/lib/permissions";
 import { reindexFile } from "@/lib/search-index";
 import { getObject, head, objectKey } from "@/lib/storage";
@@ -53,11 +55,26 @@ function aiConfigured(): boolean {
   return Boolean(ANTHROPIC_API_KEY?.trim());
 }
 
-/** Active folders the user may file into, as the model sees them. */
+/** The company's own folders the user may file into, as the model sees them. Year folders are not chosen, they are built. */
 function folderChoices(ctx: FileContext) {
   return ctx.folders
-    .filter((f) => f.isActive && ctx.writable.has(f.id))
+    .filter((f) => f.kind === "regular" && f.isActive && ctx.writable.has(f.id))
     .map((f) => ({ id: f.id, path: ctx.paths.get(f.id) ?? f.name, description: f.description }));
+}
+
+const partyChoices = (parties: PartyRow[]) => parties.map((p) => ({ id: p.id, side: p.side, name: p.name, aliases: p.aliases }));
+
+/** How a filing answer is kept on the file until the uploader confirms it. */
+function storedFiling(filing: Filing | null) {
+  if (!filing) return { suggestedFolderId: null, suggestedTrading: Prisma.DbNull, filingConfidence: null, filingReason: null };
+  const trading: StoredTrading | null =
+    filing.placement === "trading" && filing.side && filing.docKind ? { side: filing.side, partyId: filing.partyId, partyName: filing.partyName, docKind: filing.docKind } : null;
+  return {
+    suggestedFolderId: filing.placement === "folder" ? filing.folderId : null,
+    suggestedTrading: trading ?? Prisma.DbNull,
+    filingConfidence: filing.confidence,
+    filingReason: filing.reason,
+  };
 }
 
 /**
@@ -114,7 +131,15 @@ export async function readUpload(prisma: Db, ctx: FileContext, company: Company,
     outcome = await analyzeFile(
       prisma,
       { orgId: ctx.orgId, timezone: company.timezone, userId: ctx.userId, fileId: file.id },
-      { model: aiEnv().ANTHROPIC_MODEL, company, folders: folderChoices(ctx), fileName: file.originalName, uploadedAt: file.createdAt, extraction },
+      {
+        model: aiEnv().ANTHROPIC_MODEL,
+        company,
+        folders: folderChoices(ctx),
+        parties: partyChoices(await listParties(prisma, ctx.orgId)),
+        fileName: file.originalName,
+        uploadedAt: file.createdAt,
+        extraction,
+      },
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -146,9 +171,7 @@ export async function readUpload(prisma: Db, ctx: FileContext, company: Company,
       language: analysis.language,
       facts: analysis.facts,
       tags: analysis.tags,
-      suggestedFolderId: analysis.filing.folderId || null,
-      filingConfidence: analysis.filing.folderId ? analysis.filing.confidence : null,
-      filingReason: analysis.filing.folderId ? analysis.filing.reason : null,
+      ...storedFiling(filingIsUsable(analysis.filing) ? analysis.filing : null),
       aiModel: outcome.model,
       readStatus: outcome.readStatus,
       aiError: null,
@@ -286,8 +309,6 @@ export function factsOf(value: unknown): Facts {
   return parsed.success ? storedFacts(parsed.data) : { parties: [], references: [], amounts: [], products: [] };
 }
 
-export type FolderSuggestion = { folderId: string; path: string; confidence: number; reason: string };
-
 /**
  * Saves the summary the uploader confirmed and returns the folder the AI suggests for it. The
  * suggestion made while reading is reused when nothing was changed; otherwise the cheaper model
@@ -298,7 +319,7 @@ export async function confirmSummary(
   ctx: FileContext,
   company: Company,
   input: { fileId: string } & SummaryFormInput,
-): Promise<{ suggestion: FolderSuggestion | null }> {
+): Promise<{ suggestion: FilingSuggestion | null }> {
   if (!can(ctx.role, "review.accept")) throw notWaiting();
   const file = await prisma.storedFile.findFirst({
     where: waitingWhere(ctx, input.fileId),
@@ -314,8 +335,10 @@ export async function confirmSummary(
       readStatus: true,
       aiModel: true,
       suggestedFolderId: true,
+      suggestedTrading: true,
       filingConfidence: true,
       filingReason: true,
+      createdAt: true,
     },
   });
   if (!file) throw notWaiting();
@@ -357,20 +380,27 @@ export async function confirmSummary(
 
   await reindexFile(prisma, file.id);
 
-  let filing: { folderId: string; confidence: number; reason: string } | null = null;
-  if (!edited && file.suggestedFolderId && ctx.writable.has(file.suggestedFolderId)) {
-    filing = { folderId: file.suggestedFolderId, confidence: file.filingConfidence ?? 0, reason: file.filingReason ?? "" };
-  } else if (aiConfigured()) {
-    const chosen = await suggestFolder(
-      prisma,
-      { orgId: ctx.orgId, timezone: company.timezone, userId: ctx.userId, fileId: file.id },
-      { model: aiEnv().ANTHROPIC_MODEL_LIGHT, company, folders: folderChoices(ctx), summary: confirmed },
-    );
-    filing = chosen?.folderId ? { folderId: chosen.folderId, confidence: chosen.confidence, reason: chosen.reason } : null;
-    await prisma.storedFile.update({
-      where: { id: file.id },
-      data: { suggestedFolderId: filing?.folderId ?? null, filingConfidence: filing?.confidence ?? null, filingReason: filing?.reason ?? null },
-    });
-  }
-  return { suggestion: filing ? { ...filing, path: ctx.paths.get(filing.folderId) ?? "" } : null };
+  const known = await listParties(prisma, ctx.orgId);
+  const year = filingYear(confirmed.docDate, file.createdAt, company.timezone);
+  // An unchanged summary keeps the suggestion made while reading, if it still points somewhere usable.
+  const kept = edited
+    ? null
+    : suggestionFor({ folderId: file.suggestedFolderId, trading: file.suggestedTrading, confidence: file.filingConfidence, reason: file.filingReason }, ctx, known, year);
+  if (kept || !aiConfigured()) return { suggestion: kept };
+
+  const chosen = await suggestFolder(
+    prisma,
+    { orgId: ctx.orgId, timezone: company.timezone, userId: ctx.userId, fileId: file.id },
+    { model: aiEnv().ANTHROPIC_MODEL_LIGHT, company, folders: folderChoices(ctx), parties: partyChoices(known), summary: confirmed },
+  );
+  const stored = storedFiling(chosen);
+  await prisma.storedFile.update({ where: { id: file.id }, data: stored });
+  return {
+    suggestion: suggestionFor(
+      { folderId: stored.suggestedFolderId, trading: stored.suggestedTrading === Prisma.DbNull ? null : stored.suggestedTrading, confidence: stored.filingConfidence, reason: stored.filingReason },
+      ctx,
+      known,
+      year,
+    ),
+  };
 }

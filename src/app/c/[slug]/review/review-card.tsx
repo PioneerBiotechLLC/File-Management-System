@@ -4,16 +4,17 @@ import { AlertTriangle, Loader2, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition } from "react";
-import { confirmSummaryAction, moveFileAction, retryReadAction } from "@/app/c/[slug]/actions";
+import { confirmSummaryAction, fileToAction, retryReadAction } from "@/app/c/[slug]/actions";
+import { DestinationPicker, draftFrom, resolveDraft } from "@/components/destination-picker";
 import { FileIcon } from "@/components/file-icon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { DOC_TYPES, DOC_TYPE_LABELS } from "@/lib/doc-types";
-import type { FileKind } from "@/lib/file-kinds";
+import { SIDE_FOLDERS, docKindForType, type FilingSuggestion, type PartyChoice } from "@/lib/file-kinds";
 import { formatBytes } from "@/lib/file-names";
-import type { FolderSuggestion, SummaryFormInput } from "@/lib/intake";
+import type { SummaryFormInput } from "@/lib/intake";
 
 export type ReviewFile = {
   id: string;
@@ -29,7 +30,7 @@ export type ReviewFile = {
   aiNote: string | null;
   retryable: boolean;
   form: SummaryFormInput;
-  suggestion: FolderSuggestion | null;
+  suggestion: FilingSuggestion | null;
 };
 
 type Folder = { id: string; path: string };
@@ -37,7 +38,7 @@ type Folder = { id: string; path: string };
 const FIELD =
   "border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:ring-[3px]";
 
-export function ReviewCard({ slug, file, kinds, folders, focused }: { slug: string; file: ReviewFile; kinds: FileKind[]; folders: Folder[]; focused: boolean }) {
+export function ReviewCard({ slug, file, parties, folders, focused }: { slug: string; file: ReviewFile; parties: PartyChoice[]; folders: Folder[]; focused: boolean }) {
   const router = useRouter();
   const [step, setStep] = useState(file.step);
   const [suggestion, setSuggestion] = useState(file.suggestion);
@@ -88,7 +89,7 @@ export function ReviewCard({ slug, file, kinds, folders, focused }: { slug: stri
         />
       )}
       {step === "folder" && (
-        <FolderStep slug={slug} file={file} kinds={kinds} folders={folders} suggestion={suggestion} focused={focused} onBack={() => setStep("summary")} />
+        <FolderStep slug={slug} file={file} parties={parties} folders={folders} suggestion={suggestion} focused={focused} onBack={() => setStep("summary")} />
       )}
     </section>
   );
@@ -104,7 +105,7 @@ function SummaryStep({
   slug: string;
   file: ReviewFile;
   focused: boolean;
-  onConfirmed: (suggestion: FolderSuggestion | null) => void;
+  onConfirmed: (suggestion: FilingSuggestion | null) => void;
   onRetry: () => void;
 }) {
   const router = useRouter();
@@ -245,17 +246,10 @@ function SummaryStep({
   );
 }
 
-/** `kind:<id>` or `folder:<id>`; an empty folder id while choosing. */
-function answerFor(suggestion: FolderSuggestion | null, kinds: FileKind[]): string {
-  if (!suggestion) return "";
-  const kind = kinds.find((k) => k.folderId === suggestion.folderId);
-  return kind ? `kind:${kind.id}` : `folder:${suggestion.folderId}`;
-}
-
 function FolderStep({
   slug,
   file,
-  kinds,
+  parties,
   folders,
   suggestion,
   focused,
@@ -263,31 +257,32 @@ function FolderStep({
 }: {
   slug: string;
   file: ReviewFile;
-  kinds: FileKind[];
+  parties: PartyChoice[];
   folders: Folder[];
-  suggestion: FolderSuggestion | null;
+  suggestion: FilingSuggestion | null;
   focused: boolean;
   onBack: () => void;
 }) {
   const router = useRouter();
-  const [answer, setAnswer] = useState(() => answerFor(suggestion, kinds));
+  const fallback = { year: Number(file.form.docDate.slice(0, 4)) || new Date().getFullYear(), docKind: docKindForType(file.form.docType || null) };
+  const [draft, setDraft] = useState(() => draftFrom(suggestion?.destination ?? null, fallback));
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
-  useEffect(() => setAnswer(answerFor(suggestion, kinds)), [suggestion, kinds]);
+  // A new suggestion (after editing the summary) replaces the draft.
+  useEffect(() => setDraft(draftFrom(suggestion?.destination ?? null, fallback)), [suggestion]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const groups = [...new Set(kinds.map((k) => k.group))];
-  const choosingFolder = answer.startsWith("folder:");
-  const folderId = answer.startsWith("kind:") ? (kinds.find((k) => k.id === answer.slice(5))?.folderId ?? "") : answer.slice(7);
-  const path = folders.find((f) => f.id === folderId)?.path;
+  const resolved = resolveDraft(draft, parties, folders);
 
   return (
     <form
       className="grid gap-3"
       onSubmit={(e) => {
         e.preventDefault();
-        if (!folderId) return;
+        if (!resolved) return;
         start(async () => {
-          const result = await moveFileAction(slug, { fileId: file.id, folderId });
+          // Teach the new spelling only when the uploader kept the AI's company.
+          const seenAs = suggestion?.seenAs && resolved.destination.kind === "trading" && resolved.destination.partyId === (suggestion.destination as { partyId?: string | null }).partyId ? suggestion.seenAs : null;
+          const result = await fileToAction(slug, { fileId: file.id, destination: resolved.destination, seenAs });
           if (!result.ok) return setError(result.error);
           if (focused) router.push(`/c/${slug}/files/${file.id}`);
           else router.refresh();
@@ -299,6 +294,7 @@ function FolderStep({
           <Sparkles className="text-brand mt-0.5 size-4 shrink-0" />
           <span>
             The AI suggests <span className="font-medium">{suggestion.path}</span>
+            {suggestion.newParty && <> (a new {suggestion.destination.kind === "trading" ? SIDE_FOLDERS[suggestion.destination.side].label.toLowerCase() : "folder"})</>}
             {suggestion.reason && <>: {suggestion.reason}</>}
             {suggestion.confidence < 0.5 && <> (it is not sure)</>}. Change it if that is wrong.
           </span>
@@ -306,43 +302,9 @@ function FolderStep({
       ) : (
         <p className="text-muted-foreground text-sm">The AI had no suggestion for this file. Choose where it belongs.</p>
       )}
-      <div className="grid gap-1.5">
-        <Label htmlFor={`kind-${file.id}`}>What is this file?</Label>
-        <NativeSelect id={`kind-${file.id}`} value={choosingFolder ? "folder:" : answer} onChange={(e) => setAnswer(e.target.value)} className="w-full" autoFocus={focused}>
-          <option value="" disabled>
-            Choose what it is…
-          </option>
-          {groups.map((group) => (
-            <optgroup key={group} label={group}>
-              {kinds
-                .filter((k) => k.group === group)
-                .map((k) => (
-                  <option key={k.id} value={`kind:${k.id}`}>
-                    {k.label}
-                  </option>
-                ))}
-            </optgroup>
-          ))}
-          <optgroup label="Not listed">
-            <option value="folder:">Choose a folder myself…</option>
-          </optgroup>
-        </NativeSelect>
-      </div>
-      {choosingFolder && (
-        <NativeSelect aria-label="Folder" value={answer.slice(7)} onChange={(e) => setAnswer(`folder:${e.target.value}`)} className="w-full">
-          <option value="" disabled>
-            Choose a folder…
-          </option>
-          {folders.map((f) => (
-            <option key={f.id} value={f.id}>
-              {f.path}
-            </option>
-          ))}
-        </NativeSelect>
-      )}
-      <p className="text-muted-foreground text-sm">Goes to: {path ? <span className="text-foreground font-medium">{path}</span> : "—"}</p>
+      <DestinationPicker draft={draft} onChange={setDraft} parties={parties} folders={folders} autoFocus={focused} />
       <div className="flex flex-wrap items-center gap-3">
-        <Button type="submit" disabled={pending || !folderId}>
+        <Button type="submit" disabled={pending || !resolved}>
           {pending ? "Filing…" : "Save here"}
         </Button>
         <Button type="button" variant="ghost" onClick={onBack} disabled={pending}>

@@ -67,7 +67,7 @@ describe("folderPaths", () => {
 describe("DEFAULT_FOLDERS", () => {
   it("describes every folder, because Claude files by the description", () => {
     const all = DEFAULT_FOLDERS.flatMap((f) => [f, ...(f.children ?? [])]);
-    expect(all.length).toBe(33);
+    expect(all.length).toBe(16);
     for (const folder of all) {
       expect(folder.description.length).toBeGreaterThan(10);
       expect(folder.nameAr.length).toBeGreaterThan(0);
@@ -76,7 +76,10 @@ describe("DEFAULT_FOLDERS", () => {
 
   it("restricts HR and Bank", () => {
     expect(DEFAULT_FOLDERS.find((f) => f.name === "HR")?.restricted).toBe(true);
-    const finance = DEFAULT_FOLDERS.find((f) => f.name === "Finance");
-    expect(finance?.children?.find((f) => f.name === "Bank")?.restricted).toBe(true);
+    expect(DEFAULT_FOLDERS.find((f) => f.name === "Bank")?.restricted).toBe(true);
+  });
+
+  it("holds only the company's own folders; trading documents go under years", () => {
+    expect(DEFAULT_FOLDERS.map((f) => f.name)).toEqual(["Quality & Regulatory", "HR", "Legal", "Marketing", "Bank", "General"]);
   });
 });

@@ -2,12 +2,14 @@
 
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { deleteFileAction, moveFileAction, renameFileAction, updateDetailsAction } from "@/app/c/[slug]/actions";
+import { deleteFileAction, fileToAction, renameFileAction, updateDetailsAction } from "@/app/c/[slug]/actions";
+import { DestinationPicker, draftFrom, resolveDraft } from "@/components/destination-picker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { DOC_TYPES, DOC_TYPE_LABELS } from "@/lib/doc-types";
+import type { Destination, DocKindId, PartyChoice } from "@/lib/file-kinds";
 
 type Notice = { ok: boolean; text: string } | null;
 
@@ -23,45 +25,44 @@ function NoticeLine({ notice }: { notice: Notice }) {
 export function MoveForm({
   slug,
   fileId,
-  currentFolderId,
+  current,
+  defaults,
+  parties,
   folders,
 }: {
   slug: string;
   fileId: string;
-  currentFolderId: string | null;
+  /** Where the file is now; null while unfiled. */
+  current: Destination | null;
+  defaults: { year: number; docKind: DocKindId };
+  parties: PartyChoice[];
   folders: { id: string; path: string }[];
 }) {
   const router = useRouter();
-  const [folderId, setFolderId] = useState(currentFolderId ?? "");
+  const [draft, setDraft] = useState(() => draftFrom(current, defaults));
   const [notice, setNotice] = useState<Notice>(null);
   const [pending, start] = useTransition();
+  const resolved = resolveDraft(draft, parties, folders);
+  const unchanged = resolved !== null && current !== null && JSON.stringify(resolved.destination) === JSON.stringify(current);
 
   return (
     <form
-      className="grid gap-2"
+      className="grid gap-3"
       onSubmit={(e) => {
         e.preventDefault();
+        if (!resolved) return;
         start(async () => {
-          const result = await moveFileAction(slug, { fileId, folderId });
-          setNotice(result.ok ? { ok: true, text: currentFolderId ? "Moved." : "Filed." } : { ok: false, text: result.error });
+          const result = await fileToAction(slug, { fileId, destination: resolved.destination });
+          setNotice(result.ok ? { ok: true, text: current ? "Moved." : "Filed." } : { ok: false, text: result.error });
           if (result.ok) router.refresh();
         });
       }}
     >
-      <Label htmlFor="folder">{currentFolderId ? "Move to" : "File in"}</Label>
-      <div className="flex gap-2">
-        <NativeSelect id="folder" className="min-w-0 flex-1" value={folderId} onChange={(e) => setFolderId(e.target.value)} required>
-          <option value="" disabled>
-            Choose a folder…
-          </option>
-          {folders.map((f) => (
-            <option key={f.id} value={f.id}>
-              {f.path}
-            </option>
-          ))}
-        </NativeSelect>
-        <Button type="submit" disabled={pending || !folderId || folderId === currentFolderId}>
-          {currentFolderId ? "Move" : "File it"}
+      <Label>{current ? "Move to" : "File in"}</Label>
+      <DestinationPicker draft={draft} onChange={setDraft} parties={parties} folders={folders} />
+      <div>
+        <Button type="submit" disabled={pending || !resolved || unchanged}>
+          {current ? "Move" : "File it"}
         </Button>
       </div>
       <NoticeLine notice={notice} />

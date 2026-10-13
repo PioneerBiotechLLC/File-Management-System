@@ -8,7 +8,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { db } from "@/lib/db";
 import { DOC_TYPE_LABELS, type DocType } from "@/lib/doc-types";
+import { docKindForType } from "@/lib/file-kinds";
 import { fileContext, getFile } from "@/lib/files";
+import { destinationOf, filingYear, listParties } from "@/lib/parties";
 import { formatBytes, previewKind } from "@/lib/file-names";
 import { can } from "@/lib/permissions";
 import { companyContext } from "@/lib/session";
@@ -55,10 +57,14 @@ export default async function FilePage({ params }: { params: Promise<{ slug: str
   const canEdit = can(role, "file.rename", { ownsFile: owns });
   const canMove = file.folderId === null ? can(role, "review.accept") && (owns || role === "admin") : can(role, "file.move", { ownsFile: owns });
   const canDelete = can(role, "file.delete", { ownsFile: owns });
+  // Company folders only; customer and supplier folders are chosen by year, company and kind.
   const folderOptions = ctx.folders
-    .filter((f) => ctx.writable.has(f.id))
+    .filter((f) => f.kind === "regular" && ctx.writable.has(f.id))
     .map((f) => ({ id: f.id, path: ctx.paths.get(f.id) ?? f.name }))
     .sort((a, b) => a.path.localeCompare(b.path));
+  const parties = canMove ? await listParties(prisma, org.id) : [];
+  const current = destinationOf(file.folderId, ctx, parties);
+  const moveDefaults = { year: filingYear(file.docDate, file.createdAt, org.timezone), docKind: docKindForType(file.docType as DocType | null) };
 
   const base = `/c/${slug}/files/${file.id}/download`;
   const preview = previewKind(file.mimeType);
@@ -170,7 +176,16 @@ export default async function FilePage({ params }: { params: Promise<{ slug: str
             <CardContent className="grid gap-3 text-sm">
               <p dir="auto">{file.folderPath ?? "Not filed yet"}</p>
               {file.filedBy && <p className="text-muted-foreground">Filed by {file.filedBy === "ai" ? "AI" : file.filedBy}</p>}
-              {canMove && <MoveForm slug={slug} fileId={file.id} currentFolderId={file.folderId} folders={folderOptions} />}
+              {canMove && (
+                <MoveForm
+                  slug={slug}
+                  fileId={file.id}
+                  current={current}
+                  defaults={moveDefaults}
+                  parties={parties.map((p) => ({ id: p.id, side: p.side, name: p.name, aliases: p.aliases }))}
+                  folders={folderOptions}
+                />
+              )}
             </CardContent>
           </Card>
 

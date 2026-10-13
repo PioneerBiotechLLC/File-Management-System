@@ -5,6 +5,7 @@ import { createCompany, slugSchema } from "@/lib/companies";
 import { db, disconnect } from "@/lib/db";
 import { seedDefaultFolders } from "@/lib/folders";
 import { UserError } from "@/lib/errors";
+import { restructureFolders } from "@/lib/restructure";
 import { reindexAll } from "@/lib/search-index";
 import { addMember, deactivateUser, emailSchema, makeOwner, removeMember } from "@/lib/users";
 
@@ -123,6 +124,18 @@ folders
       const created = await seedDefaultFolders(db(), company.id, "system");
       console.log(`${company.slug}: ${created} folder${created === 1 ? "" : "s"} created.`);
     }
+  });
+
+folders
+  .command("restructure")
+  .description("Move to year folders: Bank to the top, current company folders, old Sales/Purchasing/Logistics/Finance closed (safe to run again)")
+  .requiredOption("--org <slug>", "company slug")
+  .action(async (opts: { org: string }) => {
+    const company = await companyBySlug(opts.org);
+    const result = await restructureFolders(db(), company.id, actor.email);
+    console.log(`${company.slug}: ${result.created} folder${result.created === 1 ? "" : "s"} created${result.bankMoved ? ", Bank moved to the top" : ""}.`);
+    if (result.retired.length) console.log(`Closed (files stay readable): ${result.retired.join(", ")}.`);
+    if (result.filesInRetired) console.log(`${result.filesInRetired} file${result.filesInRetired === 1 ? " is" : "s are"} still in the old folders. Open each and use Move to file it by customer or supplier.`);
   });
 
 try {

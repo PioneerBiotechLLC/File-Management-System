@@ -1,38 +1,47 @@
 import { describe, expect, it } from "vitest";
-import { fileKindsFor } from "./file-kinds";
-import { DEFAULT_FOLDERS, folderPaths } from "./folders";
+import { DOC_TYPES } from "./doc-types";
+import { DOC_KINDS, docKindForType, matchParty, partyKey, tradingPath } from "./file-kinds";
 
-/** The default folder tree, with ids equal to their paths. */
-function defaultPaths(): Map<string, string> {
-  const folders: { id: string; parentId: string | null; name: string }[] = [];
-  const walk = (list: typeof DEFAULT_FOLDERS, parent: string | null) => {
-    for (const f of list) {
-      const id = parent ? `${parent} / ${f.name}` : f.name;
-      folders.push({ id, parentId: parent, name: f.name });
-      if (f.children) walk(f.children, id);
+describe("partyKey", () => {
+  it("ignores case, punctuation, legal forms and a leading 'the'", () => {
+    for (const name of ["Gulf Pharmacy LLC", "GULF PHARMACY L.L.C.", "Gulf  Pharmacy, L.L.C", "The Gulf Pharmacy", "gulf-pharmacy fze"]) {
+      expect(partyKey(name)).toBe("gulf pharmacy");
     }
-  };
-  walk(DEFAULT_FOLDERS, null);
-  return folderPaths(folders);
-}
-
-describe("fileKindsFor", () => {
-  it("maps every answer to a folder in the default tree", () => {
-    const paths = defaultPaths();
-    const kinds = fileKindsFor(paths, new Set(paths.keys()));
-    expect(kinds).toHaveLength(25);
-    expect(kinds.find((k) => k.id === "supplier-invoice")).toMatchObject({ folderId: "Purchasing / Supplier Invoices", docType: "invoice" });
-    expect(kinds.find((k) => k.id === "general")).toMatchObject({ folderId: "General", group: "Other" });
+    expect(partyKey("Al Noor Chemicals & Co.")).toBe("al noor chemicals");
+    expect(partyKey("شركة النور للكيماويات ذ.م.م")).toBe("شركة النور للكيماويات");
   });
 
-  it("hides answers whose folder the person cannot upload to, or that no longer exists", () => {
-    const paths = defaultPaths();
-    const writable = new Set([...paths.keys()].filter((id) => !id.startsWith("HR") && id !== "Finance / Bank"));
-    paths.delete("Logistics / Customs");
-    const ids = fileKindsFor(paths, writable).map((k) => k.id);
-    expect(ids).not.toContain("employment-contract");
-    expect(ids).not.toContain("bank");
-    expect(ids).not.toContain("customs");
-    expect(ids).toContain("coa");
+  it("never folds a name down to nothing", () => {
+    expect(partyKey("LLC")).toBe("llc");
+    expect(partyKey("  ")).toBe("");
+  });
+});
+
+describe("matchParty", () => {
+  const parties = [
+    { id: "p1", side: "customer" as const, name: "Gulf Pharmacy", key: "gulf pharmacy", aliases: ["gpharm"] },
+    { id: "p2", side: "supplier" as const, name: "Gulf Pharmacy", key: "gulf pharmacy", aliases: [] },
+  ];
+
+  it("matches on the same side by folded name or a known spelling", () => {
+    expect(matchParty(parties, "customer", "GULF PHARMACY L.L.C.")?.id).toBe("p1");
+    expect(matchParty(parties, "supplier", "Gulf Pharmacy")?.id).toBe("p2");
+    expect(matchParty(parties, "customer", "GPharm")?.id).toBe("p1");
+    expect(matchParty(parties, "customer", "Noor")).toBeNull();
+  });
+});
+
+describe("document kinds", () => {
+  it("gives every document type a customer/supplier folder", () => {
+    for (const type of DOC_TYPES) expect(DOC_KINDS.map((k) => k.id)).toContain(docKindForType(type));
+    expect(docKindForType("invoice")).toBe("invoices");
+    expect(docKindForType("delivery_note")).toBe("delivery_notes");
+    expect(docKindForType(null)).toBe("correspondence");
+  });
+
+  it("builds the path", () => {
+    expect(tradingPath({ kind: "trading", year: 2026, side: "customer", partyId: null, partyName: "Gulf Pharmacy", docKind: "invoices" })).toBe(
+      "2026 / Customers / Gulf Pharmacy / Invoices",
+    );
   });
 });

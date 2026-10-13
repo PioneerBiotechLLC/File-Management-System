@@ -5,6 +5,7 @@ import { checkBudget, type LimitReason } from "@/lib/ai-limits";
 import { DOC_TYPES } from "@/lib/doc-types";
 import type { Db } from "@/lib/db";
 import type { Extraction } from "@/lib/extract";
+import { DOC_KIND_IDS, SIDES, cleanPartyName, type PartyChoice, type PartySide } from "@/lib/file-kinds";
 
 type MessageParams = Anthropic.Beta.Messages.MessageCreateParamsNonStreaming;
 type Tool = Anthropic.Beta.Messages.BetaTool;
@@ -20,6 +21,18 @@ const MAX_INPUT_TOKENS = 200_000;
 const MAX_OUTPUT_TOKENS = 8_000;
 
 export type FolderChoice = { id: string; path: string; description: string | null };
+
+/** How a document is filed; shared by the reading model and the folder-choice model. */
+export const FILING_RULES = `Filing rules ("we" and "our company" mean the company named with the lists):
+- placement "trading" for a document exchanged between us and one customer or supplier: quotations, purchase orders, order confirmations, delivery notes, invoices, credit notes, certificates of analysis for goods we bought or sold, contracts with them, their price lists, payments and receipts, shipping and customs papers, and letters or emails with them. These are kept per year, then customers or suppliers, then the company, then the kind of document.
+  - side: "customer" when that company buys from us (we are the seller); "supplier" when we buy from them.
+  - partyId: the id from the customers and suppliers list when it is the same company on the same side, even if spelled differently or with or without LLC, FZE, Ltd and the like. Otherwise null.
+  - partyName: that company's name as printed, without legal forms such as LLC, L.L.C., FZE, FZCO, Ltd or Co. Never our own company.
+  - docKind: quotations, purchase_orders, delivery_notes, invoices, coa (certificate of analysis), contracts, price_lists, payments (payments, receipts, remittances, statements of account), shipping (bills of lading, airway bills, packing lists, certificates of origin, customs papers) or correspondence (anything else with them).
+  - folderId: null.
+- placement "folder" for everything else: our licences and GMP certificates, registration files, SOPs, employee records, our company documents, marketing material, bank statements. folderId is the id of the best folder from the company folders list; side, partyId, partyName and docKind are null.
+- confidence: 0 to 1. Above 0.9 when it clearly belongs there; 0.5 to 0.75 when two places are plausible; below 0.5 when unsure.
+- reason: one short English sentence a colleague would understand, for example "Invoice we issued to a customer".`;
 
 const SYSTEM_PROMPT = `You read documents for a company's document manager. Each request contains one document that an employee uploaded. Record what it is by calling the record_analysis tool exactly once. Do not reply with plain text.
 
@@ -41,9 +54,9 @@ How to fill record_analysis:
 - facts.products: every product or material named, with strength, grade or pack size where shown.
 - facts.expiryDate: YYYY-MM-DD when the document expires (certificates, licences, contracts, batches), otherwise null.
 - tags: 3 to 8 short search keywords such as the customer, supplier, product family or country.
-- filing.folderId: the id of the single best folder from the folder list, or null only when no folder fits at all. Prefer the most specific folder. Folder descriptions say what belongs where; "we" means the company named with the list.
-- filing.confidence: 0 to 1. Above 0.9 when the document clearly belongs there; 0.5 to 0.75 when two folders are plausible; below 0.5 when unsure.
-- filing.reason: one short English sentence a colleague would understand, for example "Quotation we sent to a customer".`;
+- filing: where the document belongs, by the filing rules below.
+
+${FILING_RULES}`;
 
 /** Strict tool schemas express "or null" with anyOf. */
 const nullableString = { anyOf: [{ type: "string" }, { type: "null" }] };
@@ -77,11 +90,18 @@ const FACTS_SCHEMA = {
   },
 };
 
+const nullableEnum = (values: readonly string[]) => ({ anyOf: [{ type: "string", enum: [...values] }, { type: "null" }] });
+
 export const FILING_SCHEMA = {
   type: "object" as const,
   additionalProperties: false,
-  required: ["folderId", "confidence", "reason"],
+  required: ["placement", "side", "partyId", "partyName", "docKind", "folderId", "confidence", "reason"],
   properties: {
+    placement: { type: "string", enum: ["trading", "folder"] },
+    side: nullableEnum(SIDES),
+    partyId: nullableString,
+    partyName: nullableString,
+    docKind: nullableEnum(DOC_KIND_IDS),
     folderId: nullableString,
     confidence: { type: "number", description: "0 to 1" },
     reason: { type: "string" },
@@ -144,7 +164,17 @@ export const factsInput = z.object({
   expiryDate: isoDate,
 });
 
+/** Unknown values fall back to null, so a slightly off answer is filed by hand rather than failing the read. */
 export const filingInput = z.object({
+  placement: z.enum(["trading", "folder"]).catch("folder"),
+  side: z.enum(SIDES).nullable().catch(null),
+  partyId: z.string().nullable().catch(null),
+  partyName: z
+    .string()
+    .nullable()
+    .transform((v) => (v ? cleanPartyName(v) || null : null))
+    .catch(null),
+  docKind: z.enum(DOC_KIND_IDS).nullable().catch(null),
   folderId: z.string().nullable(),
   confidence: z.number().transform((c) => (Number.isFinite(c) ? Math.min(1, Math.max(0, c)) : 0)),
   reason: z.string().transform(clip(300)),
@@ -176,33 +206,60 @@ export function storedFacts(parsed: z.output<typeof factsInput>): Facts {
   return { ...facts, ...(expiryDate ? { expiryDate: expiryDate.toISOString().slice(0, 10) } : {}) };
 }
 
-/** A folder id outside the list the uploader may write to is dropped, so a document can never steer itself into a folder it was not offered. */
-export function limitFiling(filing: Filing, allowedFolderIds: ReadonlySet<string>): Filing {
-  return filing.folderId && allowedFolderIds.has(filing.folderId) ? filing : { folderId: null, confidence: 0, reason: filing.reason };
+const NO_FILING: Omit<Filing, "reason"> = { placement: "folder", side: null, partyId: null, partyName: null, docKind: null, folderId: null, confidence: 0 };
+
+/** What the model may file into: the uploader's writable company folders and the known parties. */
+export type FilingChoices = { folderIds: ReadonlySet<string>; parties: ReadonlyMap<string, PartySide> };
+
+/**
+ * Keeps only a usable answer: a folder the uploader was offered, or a customer/supplier with a side,
+ * a kind and a name or a known party on that side. A document can never steer itself anywhere else.
+ */
+export function limitFiling(filing: Filing, allowed: FilingChoices): Filing {
+  if (filing.placement === "folder") {
+    return filing.folderId && allowed.folderIds.has(filing.folderId) ? { ...NO_FILING, folderId: filing.folderId, confidence: filing.confidence, reason: filing.reason } : { ...NO_FILING, reason: filing.reason };
+  }
+  const partyId = filing.partyId && filing.side && allowed.parties.get(filing.partyId) === filing.side ? filing.partyId : null;
+  if (!filing.side || !filing.docKind || (!partyId && !filing.partyName)) return { ...NO_FILING, reason: filing.reason };
+  return { ...filing, partyId, folderId: null };
 }
 
+export const filingIsUsable = (f: Filing) => (f.placement === "folder" ? Boolean(f.folderId) : Boolean(f.side && f.docKind && (f.partyId || f.partyName)));
+
 /** Validates Claude's tool input. */
-export function parseAnalysis(input: unknown, allowedFolderIds: ReadonlySet<string>): Analysis {
+export function parseAnalysis(input: unknown, allowed: FilingChoices): Analysis {
   const parsed = analysisInput.parse(input);
-  return { ...parsed, facts: storedFacts(parsed.facts), filing: limitFiling(parsed.filing, allowedFolderIds) };
+  return { ...parsed, facts: storedFacts(parsed.facts), filing: limitFiling(parsed.filing, allowed) };
 }
 
 type AnalysisRequest = {
   model: string;
   company: { name: string; domain: string };
-  /** Every active folder the uploader may write to. */
+  /** The company folders (not year folders) the uploader may write to. */
   folders: FolderChoice[];
+  /** Every customer and supplier the company has. */
+  parties: PartyChoice[];
   fileName: string;
   uploadedAt: Date;
   extraction: Exclude<Extraction, { kind: "unreadable" }>;
 };
 
-export function folderList(company: AnalysisRequest["company"], folders: FolderChoice[]): string {
-  const lines = folders.map((f) => `- ${f.id} | ${f.path} | ${(f.description ?? "").replace(/\s+/g, " ").trim() || "(no description)"}`);
+export function filingChoices(req: Pick<AnalysisRequest, "folders" | "parties">): FilingChoices {
+  return { folderIds: new Set(req.folders.map((f) => f.id)), parties: new Map(req.parties.map((p) => [p.id, p.side])) };
+}
+
+const oneLine = (s: string | null | undefined) => (s ?? "").replace(/\s+/g, " ").trim();
+
+export function folderList(company: AnalysisRequest["company"], folders: FolderChoice[], parties: PartyChoice[]): string {
+  const folderLines = folders.map((f) => `- ${f.id} | ${f.path} | ${oneLine(f.description) || "(no description)"}`);
+  const partyLines = parties.map((p) => `- ${p.id} | ${p.side} | ${oneLine(p.name)}${p.aliases?.length ? ` | also: ${p.aliases.join(", ")}` : ""}`);
   return `Company: ${company.name} (email domain ${company.domain}). "We" and "our company" mean this company.
 
-Folders you may choose from (id | path | what belongs there):
-${lines.join("\n") || "(none: set filing.folderId to null)"}`;
+Company folders, for documents that are not with one customer or supplier (id | path | what belongs there):
+${folderLines.join("\n") || "(none)"}
+
+Customers and suppliers we already have (id | side | name | other spellings seen):
+${partyLines.join("\n") || "(none yet: give partyName and leave partyId null)"}`;
 }
 
 /** The request for one file. Tool and instructions come first and never change, so they are cached. */
@@ -233,7 +290,7 @@ The document was provided ${how}.`;
     tool_choice: { type: "auto" },
     system: [
       { type: "text", text: SYSTEM_PROMPT },
-      { type: "text", text: folderList(req.company, req.folders), cache_control: { type: "ephemeral" } },
+      { type: "text", text: folderList(req.company, req.folders, req.parties), cache_control: { type: "ephemeral" } },
     ],
     messages: [{ role: "user", content }],
   };
@@ -294,7 +351,7 @@ export async function analyzeFile(
     if (!call || call.type !== "tool_use") throw new AnalysisError("Claude did not return an analysis");
     let analysis: Analysis;
     try {
-      analysis = parseAnalysis(call.input, new Set(req.folders.map((f) => f.id)));
+      analysis = parseAnalysis(call.input, filingChoices(req));
     } catch (error) {
       if (error instanceof z.ZodError) throw new AnalysisError(`Claude returned an invalid analysis: ${z.prettifyError(error)}`);
       throw error;

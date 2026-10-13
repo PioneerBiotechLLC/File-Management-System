@@ -9,7 +9,7 @@ Built in phases (see `prompt-file-manager.md`). **In place:** Microsoft sign-in,
 1. **Upload** from any page: drag a file onto it, or press Upload. Files go straight from the browser to the storage bucket; nothing passes through the app server. Everyone uploads one file at a time; admins may upload several.
 2. **The AI reads it** (5–30 seconds, under a minute) and drafts the summary: what the document is, who it is from and to, its date, the prices, the materials or products, and every reference number. The file itself is sent to Claude for this one read; nothing from its contents is stored except the summary.
 3. **Check the summary** in **Review**: fix anything wrong and confirm. When the AI could not read the file (too large, an unsupported type, handwritten or unclear, a spend cap reached, or a failure), you write the summary yourself. Every filed file has a confirmed summary.
-4. **Confirm the folder.** The AI suggests one from the confirmed summary; the "What is this file?" dropdown shows its answer pre-selected (the list comes from `src/lib/file-kinds.ts`). Change it, or choose any folder yourself, and save. Only then is the file filed, and the log records who confirmed what.
+4. **Confirm where it goes.** Documents exchanged with a customer or supplier are filed as `<year> / Customers|Suppliers / <company> / <kind>` (Quotations, Purchase Orders, Delivery Notes, Invoices, Certificates of Analysis, Contracts, Price Lists, Payments & Receipts, Shipping & Customs, Correspondence). The year is the document's own date. The AI proposes the side, the company (matched to existing ones whatever the spelling, or marked new) and the kind; the folders are created the first time they are needed. Everything else goes in the company's own folders: Quality & Regulatory, HR, Legal, Marketing, Bank and General. Change the proposal if needed and save; only then is the file filed, and the log records who confirmed what and any customer or supplier added.
 5. **Open a file** to preview PDFs and images, edit its title, summary, type, date and tags, move it, rename it, add a new version, or delete it. Deleted files stay in **Deleted** for 30 days.
 6. **Identical files** are detected by content; you can open the existing one or upload anyway.
 7. **Admins** manage folders in Settings: create, rename, describe, nest, restrict, grant access, deactivate.
@@ -80,6 +80,7 @@ Uploads go to a staging key in the bucket and are copied to their final key when
 | `pnpm user list` | Everyone, with their companies |
 | `pnpm user remove <email> [--org <slug>]` | Remove from one company, or deactivate everywhere |
 | `pnpm folders seed [--org <slug>]` | Create any missing default folders |
+| `pnpm folders restructure --org <slug>` | One-time move to year folders: Bank to the top, old Sales/Purchasing/Logistics/Finance closed (files stay readable) |
 | `pnpm index rebuild [--org <slug>]` | Rebuild the search index |
 | `pnpm test` | Unit tests; database tests also run when `TEST_DATABASE_URL` is set |
 | `pnpm typecheck`, `pnpm build` | Type-check; production build |

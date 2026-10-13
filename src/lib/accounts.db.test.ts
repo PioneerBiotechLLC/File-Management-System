@@ -25,7 +25,7 @@ describe.skipIf(!TEST_DATABASE_URL)("companies, users and folder access (databas
     it("stores the company with a lowercase domain, seeds folders and audits", async () => {
       const org = await prisma.organization.findUniqueOrThrow({ where: { id: orgId } });
       expect(org).toMatchObject({ slug: "api-pharma", domain: "api-pharma.net", timezone: "Asia/Dubai" });
-      expect(await prisma.folder.count({ where: { orgId } })).toBe(33);
+      expect(await prisma.folder.count({ where: { orgId } })).toBe(16);
       expect(await prisma.folder.count({ where: { orgId, access: "restricted" } })).toBe(2);
       expect(await prisma.auditLog.count({ where: { orgId, action: "org.create" } })).toBe(1);
     });
@@ -37,11 +37,11 @@ describe.skipIf(!TEST_DATABASE_URL)("companies, users and folder access (databas
 
     it("seeds folders idempotently", async () => {
       expect(await seedDefaultFolders(prisma, orgId, "system")).toBe(0);
-      expect(await prisma.folder.count({ where: { orgId } })).toBe(33);
+      expect(await prisma.folder.count({ where: { orgId } })).toBe(16);
     });
 
     it("does not allow two top-level folders with the same name", async () => {
-      await expect(prisma.folder.create({ data: { orgId, parentId: null, name: "Sales", createdBy: "t" } })).rejects.toThrow();
+      await expect(prisma.folder.create({ data: { orgId, parentId: null, name: "General", createdBy: "t" } })).rejects.toThrow();
     });
   });
 

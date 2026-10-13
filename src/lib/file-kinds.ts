@@ -1,54 +1,112 @@
 import type { DocType } from "@/lib/doc-types";
 
 /**
- * The answers to "What is this file?" when uploading. Each one files into a default folder,
- * matched by its English path, and sets the document type. A company that renamed or removed
- * the folder simply does not see that answer; "Choose a folder" always remains.
+ * Where a document is filed. Documents exchanged with one customer or supplier go under
+ * `<year> / Customers|Suppliers / <company> / <kind>`, folders the app creates the first time
+ * they are needed. Everything else goes in one of the company's own folders (HR, Quality & Regulatory…).
+ * No database code here: the browser uses this too.
  */
-const FILE_KINDS: { id: string; label: string; group: string; path: string; docType: DocType }[] = [
-  { id: "sales-quotation", group: "Sales", label: "Quotation we sent to a customer", path: "Sales / Quotations", docType: "quotation" },
-  { id: "customer-po", group: "Sales", label: "Purchase order from a customer", path: "Sales / Customer Purchase Orders", docType: "purchase_order" },
-  { id: "price-list", group: "Sales", label: "Our price list", path: "Sales / Price Lists", docType: "price_list" },
-  { id: "customer-letter", group: "Sales", label: "Letter or email with a customer", path: "Sales / Customer Correspondence", docType: "letter" },
 
-  { id: "supplier-quotation", group: "Purchasing", label: "Quotation from a supplier", path: "Purchasing / Supplier Quotations", docType: "quotation" },
-  { id: "our-po", group: "Purchasing", label: "Purchase order we sent to a supplier", path: "Purchasing / Purchase Orders", docType: "purchase_order" },
-  { id: "supplier-invoice", group: "Purchasing", label: "Invoice from a supplier", path: "Purchasing / Supplier Invoices", docType: "invoice" },
+export const SIDES = ["customer", "supplier"] as const;
+export type PartySide = (typeof SIDES)[number];
 
-  { id: "coa", group: "Quality & Regulatory", label: "Certificate of analysis (COA)", path: "Quality & Regulatory / Certificates of Analysis", docType: "coa" },
-  { id: "gmp", group: "Quality & Regulatory", label: "GMP certificate, licence or ISO certificate", path: "Quality & Regulatory / GMP & Licences", docType: "certificate" },
-  { id: "dossier", group: "Quality & Regulatory", label: "Registration dossier or approval", path: "Quality & Regulatory / Registration Dossiers", docType: "report" },
-  { id: "sop", group: "Quality & Regulatory", label: "SOP or work instruction", path: "Quality & Regulatory / SOPs", docType: "specification" },
+export const SIDE_FOLDERS: Record<PartySide, { name: string; label: string; sortOrder: number }> = {
+  customer: { name: "Customers", label: "Customer", sortOrder: 0 },
+  supplier: { name: "Suppliers", label: "Supplier", sortOrder: 1 },
+};
 
-  { id: "shipping", group: "Logistics", label: "Shipping document (bill of lading, packing list…)", path: "Logistics / Shipping Documents", docType: "other" },
-  { id: "customs", group: "Logistics", label: "Customs document", path: "Logistics / Customs", docType: "other" },
-  { id: "delivery", group: "Logistics", label: "Delivery note or proof of delivery", path: "Logistics / Delivery Notes", docType: "other" },
+/** The folders each customer and supplier gets, in this order, created only when a document needs one. */
+export const DOC_KINDS = [
+  { id: "quotations", name: "Quotations", docTypes: ["quotation"] },
+  { id: "purchase_orders", name: "Purchase Orders", docTypes: ["purchase_order"] },
+  { id: "delivery_notes", name: "Delivery Notes", docTypes: ["delivery_note"] },
+  { id: "invoices", name: "Invoices", docTypes: ["invoice"] },
+  { id: "coa", name: "Certificates of Analysis", docTypes: ["coa"] },
+  { id: "contracts", name: "Contracts", docTypes: ["contract"] },
+  { id: "price_lists", name: "Price Lists", docTypes: ["price_list"] },
+  { id: "payments", name: "Payments & Receipts", docTypes: ["payment"] },
+  { id: "shipping", name: "Shipping & Customs", docTypes: ["shipping_document"] },
+  { id: "correspondence", name: "Correspondence", docTypes: ["letter", "certificate", "report", "specification", "other"] },
+] as const satisfies readonly { id: string; name: string; docTypes: readonly DocType[] }[];
 
-  { id: "our-invoice", group: "Finance", label: "Invoice we issued to a customer", path: "Finance / Invoices Issued", docType: "invoice" },
-  { id: "payment", group: "Finance", label: "Payment, receipt or cheque", path: "Finance / Payments & Receipts", docType: "other" },
-  { id: "bank", group: "Finance", label: "Bank statement, LC or guarantee", path: "Finance / Bank", docType: "other" },
+export type DocKindId = (typeof DOC_KINDS)[number]["id"];
+export const DOC_KIND_IDS = DOC_KINDS.map((k) => k.id) as [DocKindId, ...DocKindId[]];
 
-  { id: "employment-contract", group: "HR", label: "Employment contract or offer letter", path: "HR / Contracts", docType: "contract" },
-  { id: "employee-record", group: "HR", label: "Employee record (ID, visa, payslip…)", path: "HR / Personnel", docType: "other" },
-  { id: "hr-policy", group: "HR", label: "HR policy or circular", path: "HR / Policies", docType: "other" },
+export function docKind(id: DocKindId) {
+  return DOC_KINDS.find((k) => k.id === id)!;
+}
 
-  { id: "agreement", group: "Legal", label: "Contract or agreement with a company", path: "Legal / Contracts & Agreements", docType: "contract" },
-  { id: "company-document", group: "Legal", label: "Company document (trade licence, POA…)", path: "Legal / Company Documents", docType: "certificate" },
+/** The customer/supplier folder a document of this type goes in. */
+export function docKindForType(docType: DocType | null | undefined): DocKindId {
+  return DOC_KINDS.find((k) => (k.docTypes as readonly string[]).includes(docType ?? ""))?.id ?? "correspondence";
+}
 
-  { id: "brochure", group: "Marketing", label: "Brochure, leaflet or catalogue", path: "Marketing / Brochures", docType: "other" },
-  { id: "presentation", group: "Marketing", label: "Presentation", path: "Marketing / Presentations", docType: "other" },
+/** Legal forms that do not tell two companies apart: "Gulf Pharmacy LLC" is "Gulf Pharmacy". */
+const LEGAL_SUFFIXES = new Set([
+  "llc", "fze", "fzco", "fzc", "fz", "fzllc", "ltd", "limited", "inc", "incorporated", "plc", "gmbh", "ag", "sa", "sarl", "bv", "nv",
+  "co", "company", "corp", "corporation", "est", "establishment", "pvt", "pte", "private", "wll", "spc", "psc", "pjsc", "group",
+]);
 
-  { id: "general", group: "Other", label: "Something else", path: "General", docType: "other" },
-];
+/** A display name: no control characters, single spaces, at most 100 characters. */
+export function cleanPartyName(raw: string): string {
+  // eslint-disable-next-line no-control-regex -- stripping control characters is the point
+  return raw.replace(/[\u0000-\u001f\u007f‪-‮⁦-⁩]/g, "").replace(/\s+/g, " ").trim().slice(0, 100);
+}
 
-export type FileKind = { id: string; label: string; group: string; folderId: string; docType: DocType };
+/** The name folded for matching: case, punctuation, "&"/"and" and trailing legal forms do not matter. */
+export function partyKey(name: string): string {
+  const words = cleanPartyName(name)
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/\bl\.?\s?l\.?\s?c\.?/g, " llc ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean);
+  for (;;) {
+    const last = words[words.length - 1]!;
+    if (words.length > 1 && (LEGAL_SUFFIXES.has(last) || last === "and")) words.pop();
+    // ذ.م.م is the Arabic LLC.
+    else if (words.length > 3 && words.slice(-3).join(" ") === "ذ م م") words.splice(-3);
+    else break;
+  }
+  if (words[0] === "the" && words.length > 1) words.shift();
+  return words.join(" ");
+}
 
-/** The answers this person can use: only those whose folder exists, is active and accepts their uploads. */
-export function fileKindsFor(paths: Map<string, string>, writable: Set<string>): FileKind[] {
-  const folderByPath = new Map<string, string>();
-  for (const [id, path] of paths) if (writable.has(id)) folderByPath.set(path.toLowerCase(), id);
-  return FILE_KINDS.flatMap((kind) => {
-    const folderId = folderByPath.get(kind.path.toLowerCase());
-    return folderId ? [{ id: kind.id, label: kind.label, group: kind.group, folderId, docType: kind.docType }] : [];
-  });
+export type PartyChoice = { id: string; side: PartySide; name: string; aliases?: string[] };
+
+/** The existing party this name means, by its folded name or a spelling seen before. */
+export function matchParty<P extends { side: PartySide; key?: string; name: string; aliases?: string[] }>(parties: P[], side: PartySide, name: string): P | null {
+  const key = partyKey(name);
+  if (!key) return null;
+  return parties.find((p) => p.side === side && ((p.key ?? partyKey(p.name)) === key || (p.aliases ?? []).includes(key))) ?? null;
+}
+
+export type Destination =
+  | { kind: "folder"; folderId: string }
+  | { kind: "trading"; year: number; side: PartySide; partyId: string | null; partyName: string; docKind: DocKindId };
+
+/** "2026 / Customers / Gulf Pharmacy / Invoices". */
+export function tradingPath(d: Extract<Destination, { kind: "trading" }>): string {
+  return [String(d.year), SIDE_FOLDERS[d.side].name, d.partyName, docKind(d.docKind).name].join(" / ");
+}
+
+/** What the AI (or the stored suggestion) proposes, ready to show and to file with. */
+export type FilingSuggestion = {
+  destination: Destination;
+  path: string;
+  /** A customer or supplier that has no folder yet. */
+  newParty: boolean;
+  /** The company's name as the document prints it, when it differs from the existing party's. */
+  seenAs: string | null;
+  confidence: number;
+  reason: string;
+};
+
+/** Years offered when filing: next year back to 2000. */
+export function filingYears(now = new Date()): number[] {
+  const current = now.getFullYear();
+  return Array.from({ length: current + 2 - 2000 }, (_, i) => current + 1 - i);
 }

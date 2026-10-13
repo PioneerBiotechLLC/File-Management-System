@@ -1,8 +1,8 @@
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
-import { fileKindsFor } from "@/lib/file-kinds";
 import { fileContext, listUnfiled } from "@/lib/files";
 import { MAX_READ_ATTEMPTS, READ_TIMEOUT_MS, summaryToForm } from "@/lib/intake";
+import { filingYear, listParties, suggestionFor } from "@/lib/parties";
 import { can } from "@/lib/permissions";
 import { companyContext } from "@/lib/session";
 import { ReadingWatch } from "./reading-watch";
@@ -17,12 +17,13 @@ export default async function ReviewPage({ params, searchParams }: { params: Pro
   if (!can(role, "review.accept")) notFound();
 
   const ctx = await fileContext(db(), { orgId: org.id, userId: user.id, email: user.email, role });
-  const waiting = await listUnfiled(db(), ctx);
+  const [waiting, parties] = await Promise.all([listUnfiled(db(), ctx), listParties(db(), org.id)]);
+  // Year folders are reached through the customer/supplier choice, not listed here.
   const folders = ctx.folders
-    .filter((f) => f.isActive && ctx.writable.has(f.id))
+    .filter((f) => f.kind === "regular" && f.isActive && ctx.writable.has(f.id))
     .map((f) => ({ id: f.id, path: ctx.paths.get(f.id) ?? f.name }))
     .sort((a, b) => a.path.localeCompare(b.path));
-  const kinds = fileKindsFor(ctx.paths, ctx.writable);
+  const partyChoices = parties.map((p) => ({ id: p.id, side: p.side, name: p.name, aliases: p.aliases }));
   const formatDate = new Intl.DateTimeFormat("en-GB", { timeZone: org.timezone, dateStyle: "medium", timeStyle: "short" });
   const now = Date.now();
 
@@ -42,10 +43,12 @@ export default async function ReviewPage({ params, searchParams }: { params: Pro
       aiNote: f.status === "processing" && !reading ? "The AI did not finish reading this file." : (f.aiError ?? null),
       retryable: !readByAi && f.attempts < MAX_READ_ATTEMPTS && (f.status === "processing" || (f.readStatus === null && f.aiError !== null)),
       form: summaryToForm(f),
-      suggestion:
-        f.suggestedFolderId && ctx.writable.has(f.suggestedFolderId)
-          ? { folderId: f.suggestedFolderId, path: ctx.paths.get(f.suggestedFolderId) ?? "", confidence: f.filingConfidence ?? 0, reason: f.filingReason ?? "" }
-          : null,
+      suggestion: suggestionFor(
+        { folderId: f.suggestedFolderId, trading: f.suggestedTrading, confidence: f.filingConfidence, reason: f.filingReason },
+        ctx,
+        parties,
+        filingYear(f.docDate, f.createdAt, org.timezone),
+      ),
     };
   });
   const focused = files.find((f) => f.id === focusId);
@@ -66,7 +69,7 @@ export default async function ReviewPage({ params, searchParams }: { params: Pro
       ) : (
         <div className="grid gap-4">
           {ordered.map((f) => (
-            <ReviewCard key={f.id} slug={slug} file={f} kinds={kinds} folders={folders} focused={f.id === focusId} />
+            <ReviewCard key={f.id} slug={slug} file={f} parties={partyChoices} folders={folders} focused={f.id === focusId} />
           ))}
         </div>
       )}

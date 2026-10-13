@@ -10,66 +10,17 @@ type DefaultFolder = {
   children?: DefaultFolder[];
 };
 
+/**
+ * The company's own folders: everything that is not exchanged with one customer or supplier.
+ * Trading documents (quotations, orders, invoices…) go in year folders the app creates as needed;
+ * see file-kinds.ts and parties.ts.
+ */
 export const DEFAULT_FOLDERS: DefaultFolder[] = [
-  {
-    name: "Sales",
-    nameAr: "المبيعات",
-    description: "Documents about selling our products to customers.",
-    children: [
-      {
-        name: "Quotations",
-        nameAr: "عروض الأسعار",
-        description: "Price quotations, offers and proforma invoices that we send to customers. We are the seller.",
-      },
-      {
-        name: "Customer Purchase Orders",
-        nameAr: "أوامر شراء العملاء",
-        description: "Purchase orders and order confirmations that customers send to us. We are the seller.",
-      },
-      {
-        name: "Price Lists",
-        nameAr: "قوائم الأسعار",
-        description: "Our own price lists and tender price schedules for customers.",
-      },
-      {
-        name: "Customer Correspondence",
-        nameAr: "مراسلات العملاء",
-        description: "Letters, complaints, enquiries and other correspondence with customers that is not a quotation, order or invoice.",
-      },
-    ],
-  },
-  {
-    name: "Purchasing",
-    nameAr: "المشتريات",
-    description: "Documents about buying goods and services from suppliers.",
-    children: [
-      {
-        name: "Supplier Quotations",
-        nameAr: "عروض أسعار الموردين",
-        description: "Quotations, offers and proforma invoices we receive from suppliers. We are the buyer.",
-      },
-      {
-        name: "Purchase Orders",
-        nameAr: "أوامر الشراء",
-        description: "Purchase orders that we issue to suppliers, and the suppliers' order confirmations.",
-      },
-      {
-        name: "Supplier Invoices",
-        nameAr: "فواتير الموردين",
-        description: "Invoices, credit notes and statements of account that suppliers send to us for payment.",
-      },
-    ],
-  },
   {
     name: "Quality & Regulatory",
     nameAr: "الجودة والشؤون التنظيمية",
-    description: "Quality control, compliance and product registration documents.",
+    description: "Our own quality and regulatory records, not tied to one customer or supplier order.",
     children: [
-      {
-        name: "Certificates of Analysis",
-        nameAr: "شهادات التحليل",
-        description: "Certificates of analysis (COA) and test reports for a product batch or lot, from us or from a manufacturer.",
-      },
       {
         name: "GMP & Licences",
         nameAr: "شهادات GMP والتراخيص",
@@ -84,51 +35,6 @@ export const DEFAULT_FOLDERS: DefaultFolder[] = [
         name: "SOPs",
         nameAr: "إجراءات التشغيل القياسية",
         description: "Standard operating procedures, work instructions and quality manuals.",
-      },
-    ],
-  },
-  {
-    name: "Logistics",
-    nameAr: "الخدمات اللوجستية",
-    description: "Moving goods: shipping, customs and delivery.",
-    children: [
-      {
-        name: "Shipping Documents",
-        nameAr: "مستندات الشحن",
-        description: "Bills of lading, airway bills, packing lists, certificates of origin and shipping instructions.",
-      },
-      {
-        name: "Customs",
-        nameAr: "الجمارك",
-        description: "Customs declarations, clearance documents, duty payments and import or export permits.",
-      },
-      {
-        name: "Delivery Notes",
-        nameAr: "إشعارات التسليم",
-        description: "Delivery notes, goods received notes and proofs of delivery.",
-      },
-    ],
-  },
-  {
-    name: "Finance",
-    nameAr: "المالية",
-    description: "Money in and out of the company.",
-    children: [
-      {
-        name: "Invoices Issued",
-        nameAr: "الفواتير الصادرة",
-        description: "Tax invoices and credit notes that we issue to customers.",
-      },
-      {
-        name: "Payments & Receipts",
-        nameAr: "المدفوعات والإيصالات",
-        description: "Payment vouchers, receipts, remittance advices and cheque copies.",
-      },
-      {
-        name: "Bank",
-        nameAr: "البنك",
-        description: "Bank statements, letters of credit, guarantees and other banking documents.",
-        restricted: true,
       },
     ],
   },
@@ -158,12 +64,12 @@ export const DEFAULT_FOLDERS: DefaultFolder[] = [
   {
     name: "Legal",
     nameAr: "الشؤون القانونية",
-    description: "Agreements and the company's own legal documents.",
+    description: "The company's own legal documents.",
     children: [
       {
         name: "Contracts & Agreements",
         nameAr: "العقود والاتفاقيات",
-        description: "Commercial contracts: distribution, supply, agency, lease, service and confidentiality agreements. Not employment contracts.",
+        description: "Agreements that are not with a customer or supplier of goods: office lease, consultants, services, software. Contracts with a customer or supplier go under that company.",
       },
       {
         name: "Company Documents",
@@ -188,6 +94,12 @@ export const DEFAULT_FOLDERS: DefaultFolder[] = [
         description: "Slide decks and company or product presentations.",
       },
     ],
+  },
+  {
+    name: "Bank",
+    nameAr: "البنك",
+    description: "Bank statements, letters of credit, guarantees and other banking documents. Restricted to finance and management.",
+    restricted: true,
   },
   {
     name: "General",
@@ -322,7 +234,21 @@ export async function loadFolderAccess(prisma: Db, orgId: string, userId: string
   const [folders, grants] = await Promise.all([
     prisma.folder.findMany({
       where: { orgId },
-      select: { id: true, parentId: true, name: true, nameAr: true, description: true, access: true, isActive: true, sortOrder: true },
+      select: {
+        id: true,
+        parentId: true,
+        name: true,
+        nameAr: true,
+        description: true,
+        access: true,
+        isActive: true,
+        sortOrder: true,
+        kind: true,
+        year: true,
+        side: true,
+        partyId: true,
+        docKind: true,
+      },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
     }),
     role === "admin"
