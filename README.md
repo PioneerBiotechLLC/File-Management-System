@@ -20,6 +20,8 @@ Built in phases (see `prompt-file-manager.md`). **In place:** Microsoft sign-in,
 
 Search looks only at what people confirmed: the name, title, summary, type, date, parties, reference numbers, amounts, products and tags. Nothing from a file's contents is indexed. Access is applied in the database query, so a file in a restricted folder never appears for someone without access, and the AI never sees it either.
 
+- **Browse** (the dropdowns under the search box on the Files page): year, Customers or Suppliers, company and document kind. Set any of them and every matching customer or supplier document is listed at once, with no AI. Each list offers only what still has files given the other choices, so picking 2025 hides every company and kind with nothing in 2025. The choices are in the address, so a filtered list can be bookmarked or sent.
+
 The search box sits at the top of the Files page (inside a folder it searches that folder) and of `/c/<slug>/search`, with two buttons. Enter is Search, Ctrl/⌘+Enter is AI search.
 
 - **Search** uses no AI. Letters and digits are matched separately, so "PO-4512", "PO#4512" and "4512" all find the same order; Arabic is folded so "الإنسولين" and "انسولين" meet. It tries every word first, then the identifying numbers alone, then any word. Filters: folder (with subfolders), type, date range.

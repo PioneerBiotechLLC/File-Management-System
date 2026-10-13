@@ -389,6 +389,8 @@ async function findFile(prisma: Db, ctx: FileContext, fileId: string) {
 export type ListFilesOptions = {
   /** One folder (its own files, not its subfolders); omitted for every file the user can see. */
   folderId?: string;
+  /** Several folders at once (browsing by year, company and kind); wins over `folderId`. */
+  folderIds?: string[];
   sort?: "name" | "createdAt" | "sizeBytes";
   dir?: "asc" | "desc";
   page?: number;
@@ -400,7 +402,14 @@ export async function listFiles(prisma: Db, ctx: FileContext, options: ListFiles
   const page = Number.isSafeInteger(options.page) && options.page! > 0 ? options.page! : 1;
   if (options.folderId !== undefined && !ctx.visible.has(options.folderId)) return { items: [], total: 0, page, pages: 1 };
 
-  const where = visibleFiles(ctx, options.folderId !== undefined ? { folderId: options.folderId } : {});
+  const where = visibleFiles(
+    ctx,
+    options.folderIds
+      ? { folderId: { in: options.folderIds.filter((id) => ctx.visible.has(id)) } }
+      : options.folderId !== undefined
+        ? { folderId: options.folderId }
+        : {},
+  );
   const [items, total] = await Promise.all([
     prisma.storedFile.findMany({
       where,

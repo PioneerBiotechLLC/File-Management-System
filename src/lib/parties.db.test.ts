@@ -21,6 +21,7 @@ const { createCompany } = await import("./companies");
 const { addMember } = await import("./users");
 const files = await import("./files");
 const { destinationOf, fileTo, filingYear, listParties, suggestionFor } = await import("./parties");
+const { browseTrading } = await import("./browse");
 const { restructureFolders } = await import("./restructure");
 const { grantAccess } = await import("./folder-admin");
 const { UserError } = await import("./errors");
@@ -100,6 +101,32 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
     expect((await files.getFile(prisma, admin, bought))?.folderPath).toBe("2025 / Suppliers / Gulf Pharmacy / Purchase Orders");
     expect(await prisma.folder.count({ where: { orgId, kind: "year" } })).toBe(2);
     expect(await prisma.folder.count({ where: { orgId, kind: "party", year: 2026 } })).toBe(1);
+  });
+
+  it("browses by year, side, company and kind, each list narrowed by the other choices", async () => {
+    const vic = await ctxFor("vic");
+    const all = await browseTrading(prisma, vic);
+    expect(all.active).toBe(false);
+    expect(all.years).toEqual([{ value: 2026, label: "2026", count: 3 }, { value: 2025, label: "2025", count: 1 }]);
+    expect(all.sides.map((s) => [s.value, s.count])).toEqual([["customer", 3], ["supplier", 1]]);
+    expect(all.parties.map((p) => [p.label, p.side, p.count])).toEqual([["Gulf Pharmacy", "supplier", 1], ["Gulf Pharmacy LLC", "customer", 3]]);
+    expect(all.docKinds.map((k) => [k.value, k.count])).toEqual([["quotations", 1], ["purchase_orders", 1], ["invoices", 2]]);
+    expect(all).toMatchObject({ folderIds: [], total: 0 });
+
+    // 2025 has only the supplier's purchase order, so customers, the LLC and the other kinds disappear.
+    const in2025 = await browseTrading(prisma, vic, { year: "2025" });
+    expect(in2025.years.map((y) => y.value)).toEqual([2026, 2025]);
+    expect(in2025.sides.map((s) => s.value)).toEqual(["supplier"]);
+    expect(in2025.parties.map((p) => p.label)).toEqual(["Gulf Pharmacy"]);
+    expect(in2025.docKinds.map((k) => k.value)).toEqual(["purchase_orders"]);
+    expect(in2025).toMatchObject({ active: true, total: 1 });
+
+    const invoices = await browseTrading(prisma, vic, { side: "customer", docKind: "invoices", year: "nonsense" });
+    expect(invoices.filter).toMatchObject({ side: "customer", docKind: "invoices", year: null });
+    expect(invoices.years.map((y) => y.value)).toEqual([2026]);
+    expect(invoices.total).toBe(2);
+    const listed = await files.listFiles(prisma, vic, { folderIds: invoices.folderIds });
+    expect(listed.items.map((f) => f.name).sort()).toEqual(["INV-1001.pdf", "INV-1002.pdf"]);
   });
 
   it("checks permission before creating anything", async () => {

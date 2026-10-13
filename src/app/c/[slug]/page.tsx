@@ -3,10 +3,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { FileIcon } from "@/components/file-icon";
 import { FolderTree } from "@/components/folder-tree";
+import { TradingFilters } from "@/components/trading-filters";
 import { UploadButton } from "@/components/upload-buttons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { browseTrading } from "@/lib/browse";
 import { db } from "@/lib/db";
 import { fileContext, listFiles, type ListFilesOptions } from "@/lib/files";
 import { formatBytes } from "@/lib/file-names";
@@ -14,7 +16,7 @@ import { can } from "@/lib/permissions";
 import { companyContext } from "@/lib/session";
 import { AskBox } from "./search/ask-box";
 
-type SearchParams = { folder?: string; sort?: string; dir?: string; page?: string };
+type SearchParams = { folder?: string; year?: string; side?: string; party?: string; kind?: string; sort?: string; dir?: string; page?: string };
 
 const SORTS = ["name", "createdAt", "sizeBytes"] as const;
 
@@ -38,9 +40,13 @@ export default async function CompanyHome({ params, searchParams }: { params: Pr
   if (folderId && !ctx.visible.has(folderId)) notFound();
   const folder = folderId ? ctx.folders.find((f) => f.id === folderId) : undefined;
 
+  // Browsing by year, customer or supplier, company and kind: on the home view, not inside a folder.
+  const browse = folder ? null : await browseTrading(prisma, ctx, { year: query.year, side: query.side, partyId: query.party, docKind: query.kind });
+  const browsing = Boolean(browse?.active);
+
   const sort = (SORTS as readonly string[]).includes(query.sort ?? "") ? (query.sort as NonNullable<ListFilesOptions["sort"]>) : undefined;
   const dir = query.dir === "asc" || query.dir === "desc" ? query.dir : undefined;
-  const result = await listFiles(prisma, ctx, { folderId, sort, dir, page: Number(query.page) || 1 });
+  const result = await listFiles(prisma, ctx, { folderId, folderIds: browsing ? browse!.folderIds : undefined, sort, dir, page: Number(query.page) || 1 });
 
   const treeFolders = ctx.folders.filter((f) => ctx.visible.has(f.id) && f.isActive);
   const crumbs: { id: string; name: string }[] = [];
@@ -95,7 +101,7 @@ export default async function CompanyHome({ params, searchParams }: { params: Pr
               ))}
             </nav>
             <h1 dir="auto" className="mt-1 flex items-center gap-2 text-xl font-semibold">
-              {folder ? folder.name : "Recent files"}
+              {folder ? folder.name : browsing ? `${result.total.toLocaleString("en")} ${result.total === 1 ? "file" : "files"}` : "Recent files"}
               {folder?.access === "restricted" && <Lock className="text-muted-foreground size-4" aria-label="Restricted" />}
               {folder && !folder.isActive && <Badge variant="outline">Inactive</Badge>}
             </h1>
@@ -107,6 +113,8 @@ export default async function CompanyHome({ params, searchParams }: { params: Pr
           </div>
           {can(role, "file.upload") && (!folder || ctx.writable.has(folder.id)) && <UploadButton />}
         </div>
+
+        {browse && (browse.years.length > 0 || browse.active) && <TradingFilters slug={slug} browse={browse} />}
 
         {children.length > 0 && (
           <div className="flex flex-wrap gap-2">
@@ -122,8 +130,8 @@ export default async function CompanyHome({ params, searchParams }: { params: Pr
 
         {result.items.length === 0 ? (
           <div className="text-muted-foreground rounded-lg border border-dashed p-10 text-center text-sm">
-            {folder ? "No files in this folder yet." : "No files yet."}
-            {can(role, "file.upload") && " Drop files anywhere on this page, or use Upload."}
+            {folder ? "No files in this folder yet." : browsing ? "No files match these filters." : "No files yet."}
+            {!browsing && can(role, "file.upload") && " Drop files anywhere on this page, or use Upload."}
           </div>
         ) : (
           <div className="rounded-lg border">
