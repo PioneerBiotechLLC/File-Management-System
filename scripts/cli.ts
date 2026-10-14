@@ -5,6 +5,7 @@ import { createCompany, setBrand, slugSchema } from "@/lib/companies";
 import { db, disconnect } from "@/lib/db";
 import { seedDefaultFolders } from "@/lib/folders";
 import { UserError } from "@/lib/errors";
+import { resetFiles } from "@/lib/reset";
 import { restructureFolders } from "@/lib/restructure";
 import { reindexAll } from "@/lib/search-index";
 import { addMember, deactivateUser, emailSchema, makeOwner, removeMember } from "@/lib/users";
@@ -50,6 +51,17 @@ org
     if (opts.logo === undefined && opts.color === undefined) throw new UserError("Give --logo, --color or both.");
     const brand = await setBrand(db(), { slug, logoUrl: opts.logo, primaryColor: opts.color, actorEmail: actor.email });
     console.log(`${slug}: logo ${brand.logoUrl ?? "(none)"}, colour ${brand.primaryColor ?? "(default)"}.`);
+  });
+
+org
+  .command("reset-files <slug>")
+  .description("Delete every file, customer and supplier and their folders; keep the company's own folders, people and log")
+  .requiredOption("--confirm <slug>", "type the slug again to confirm")
+  .action(async (slug: string, opts: { confirm: string }) => {
+    if (opts.confirm !== slug) throw new UserError(`To reset ${slug}, pass --confirm ${slug}.`);
+    const company = await companyBySlug(slug);
+    const r = await resetFiles(db(), company.id, actor.email);
+    console.log(`Reset ${slug}: removed ${r.files} files (${r.objects} stored objects), ${r.folders} year/customer/supplier folders and ${r.parties} companies.`);
   });
 
 const user = program.command("user").description("Users and their companies");

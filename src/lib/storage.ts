@@ -1,7 +1,9 @@
 import {
   CopyObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
+  ListObjectsV2Command,
   HeadBucketCommand,
   HeadObjectCommand,
   NoSuchKey,
@@ -136,6 +138,24 @@ export async function getObject(key: string): Promise<Uint8Array | null> {
 export async function remove(key: string): Promise<void> {
   const { s3, bucket: Bucket } = bucket();
   await s3.send(new DeleteObjectCommand({ Bucket, Key: key }));
+}
+
+/** Deletes every object under a prefix, such as `<orgId>/`; returns how many. Used only by a reset. */
+export async function removePrefix(prefix: string): Promise<number> {
+  if (!/^[A-Za-z0-9_-]{8,}\/$/.test(prefix)) throw new Error("A reset prefix must be an id followed by a slash");
+  const { s3, bucket: Bucket } = bucket();
+  let removed = 0;
+  let token: string | undefined;
+  do {
+    const page = await s3.send(new ListObjectsV2Command({ Bucket, Prefix: prefix, ContinuationToken: token }));
+    const keys = (page.Contents ?? []).flatMap((o) => (o.Key ? [{ Key: o.Key }] : []));
+    if (keys.length) {
+      await s3.send(new DeleteObjectsCommand({ Bucket, Delete: { Objects: keys, Quiet: true } }));
+      removed += keys.length;
+    }
+    token = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (token);
+  return removed;
 }
 
 /** Confirms the bucket exists and the credentials can reach it. */

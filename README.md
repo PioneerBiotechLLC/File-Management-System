@@ -12,7 +12,7 @@ Built in phases (see `prompt-file-manager.md`). **In place:** Microsoft sign-in,
 4. **Confirm where it goes.** Documents exchanged with a customer or supplier are filed as `<year> / Customers|Suppliers / <company> / <kind>` (Quotations, Purchase Orders, Delivery Notes, Invoices, Certificates of Analysis, Contracts, Price Lists, Payments & Receipts, Shipping & Customs, Correspondence). The year is the document's own date. The AI proposes the side, the company (matched to existing ones whatever the spelling, or marked new) and the kind; the folders are created the first time they are needed. Everything else goes in the company's own folders: Quality & Regulatory, HR, Legal, Marketing, Bank and General. Change the proposal if needed and save; only then is the file filed, and the log records who confirmed what and any customer or supplier added.
 5. **Open a file** to preview PDFs and images, edit its title, summary, type, date and tags, move it, rename it, add a new version, or delete it. Deleted files stay in **Deleted** for 30 days.
 6. **Identical files** are detected by content; you can open the existing one or upload anyway.
-7. **Admins** manage folders in Settings: create, rename, describe, nest, restrict, grant access, deactivate.
+7. **Admins** manage folders in Settings: create, rename, describe, nest, restrict, grant access, deactivate. **Owners** also set the company's logo and colour there, and can remove every file to start over (typing the company's slug to confirm; the company's own folders, people, log and AI spend stay).
 8. **Log** (admins): every sign-in, upload, AI read, summary confirmation, search, download, view, move, rename, delete and setting change, with the email of who did it.
 9. **Usage** (admins): what the AI cost today and this month, per person and for the company, against the limits; limits can be changed there.
 
@@ -83,6 +83,7 @@ Uploads go to a staging key in the bucket and are copied to their final key when
 | Command | What it does |
 |---|---|
 | `pnpm org add <slug> --name <name> --domain <domain>` | Create a company and its default folders |
+| `pnpm org reset-files <slug> --confirm <slug>` | The same reset as the owner's button in Settings, for a database and bucket the shell can reach |
 | `pnpm org brand <slug> --logo <url> --color <hex>` | The company's logo and colour in the header (e.g. `--logo /brand/api-pharma-mark.png --color "#be272c"`) |
 | `pnpm user add <email> --org <slug> --role admin\|editor\|viewer` | Add someone to a company |
 | `pnpm user add <email> --owner` | Make someone an owner |

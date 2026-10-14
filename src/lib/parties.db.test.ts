@@ -14,6 +14,12 @@ vi.mock("@/lib/storage", async (importOriginal) => {
     head: async (key: string) => (stored.has(key) ? { sizeBytes: stored.get(key)!, contentType: null } : null),
     copy: async (from: string, to: string) => void stored.set(to, stored.get(from)!),
     remove: async (key: string) => void stored.delete(key),
+    checkBucket: async () => undefined,
+    removePrefix: async (prefix: string) => {
+      const keys = [...stored.keys()].filter((k) => k.startsWith(prefix));
+      for (const k of keys) stored.delete(k);
+      return keys.length;
+    },
   };
 });
 
@@ -23,6 +29,7 @@ const files = await import("./files");
 const { destinationOf, fileTo, filingYear, listParties, suggestionFor } = await import("./parties");
 const { browseTrading } = await import("./browse");
 const { restructureFolders } = await import("./restructure");
+const { resetFiles } = await import("./reset");
 const { grantAccess } = await import("./folder-admin");
 const { UserError } = await import("./errors");
 
@@ -192,5 +199,25 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
 
     const again = await restructureFolders(prisma, old, "cli:test");
     expect(again).toMatchObject({ created: 0, bankMoved: false, retired: [], filesInRetired: 1 });
+  });
+
+  it("resets a company to before its first upload, keeping its own folders, people and log", async () => {
+    const regular = await prisma.folder.count({ where: { orgId, kind: "regular" } });
+    const logBefore = await prisma.auditLog.count({ where: { orgId } });
+    expect(await prisma.storedFile.count({ where: { orgId } })).toBeGreaterThan(0);
+    expect(await prisma.folder.count({ where: { orgId, kind: { not: "regular" } } })).toBeGreaterThan(0);
+
+    const r = await resetFiles(prisma, orgId, "cli:test");
+
+    expect(r.files).toBeGreaterThan(0);
+    expect(r.parties).toBe(2);
+    expect(await prisma.storedFile.count({ where: { orgId } })).toBe(0);
+    expect(await prisma.fileVersion.count({ where: { file: { orgId } } })).toBe(0);
+    expect(await prisma.party.count({ where: { orgId } })).toBe(0);
+    expect(await prisma.folder.count({ where: { orgId, kind: { not: "regular" } } })).toBe(0);
+    expect(await prisma.folder.count({ where: { orgId, kind: "regular" } })).toBe(regular);
+    expect(await prisma.membership.count({ where: { orgId } })).toBe(4);
+    expect([...stored.keys()].some((k) => k.startsWith(`${orgId}/`))).toBe(false);
+    expect(await prisma.auditLog.count({ where: { orgId } })).toBe(logBefore + 1);
   });
 });

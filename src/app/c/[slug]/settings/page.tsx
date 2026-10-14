@@ -6,6 +6,7 @@ import { can } from "@/lib/permissions";
 import { companyContext } from "@/lib/session";
 import { listMembers } from "@/lib/users";
 import { FolderSettings, type FolderRow } from "./folder-settings";
+import { CompanySettings } from "./company-settings";
 import { UsersSettings } from "./users-settings";
 
 export const metadata = { title: "Settings" };
@@ -52,6 +53,7 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
         <p className="text-muted-foreground text-sm">Folders and people at {org.name}.</p>
       </div>
       <FolderSettings slug={slug} folders={folders} grantable={grantable} />
+      {user.isOwner && <CompanySettings slug={slug} name={org.name} logoUrl={org.logoUrl} primaryColor={org.primaryColor} />}
       <UsersSettings
         slug={slug}
         currentUserId={user.id}

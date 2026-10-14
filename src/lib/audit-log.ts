@@ -230,6 +230,8 @@ export function describeEntry(entry: Entry, lookups: Lookups): LogPart[] {
       return ["Created the company"];
     case "org.brand":
       return ["Changed the company's logo or colour"];
+    case "org.reset":
+      return [`Removed every file (${text(after.files) ?? "?"}), all customers and suppliers and their folders`];
     case "user.create":
       return [`Created an account for ${person}`];
     case "membership.add":
