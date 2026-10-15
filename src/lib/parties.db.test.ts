@@ -328,6 +328,8 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
 
     nextFiling = { placement: "trading", side: "customer", partyId: null, partyName: "Julphar", materialId: null, materialName: null, docKind: "specifications", folderId: null, confidence: 0.9, reason: "A customer's own specification" };
     const year = filingYear(null, new Date(), "Asia/Dubai");
+    // The spec's own date (2012) does not scatter a customer's specifications across years.
+    await prisma.storedFile.update({ where: { id: fileId }, data: { docDate: new Date("2012-05-01T00:00:00Z") } });
     expect(await refileOne(prisma, admin, company, fileId, { apply: false })).toMatchObject({ status: "preview", from: wrong, to: `${year} / Customers / Julphar / Specifications` });
     expect((await files.getFile(prisma, admin, fileId))?.folderId).not.toBeNull();
     expect(await listRefileFiles(prisma, await ctxFor("admin"), "technical").then((l) => l.some((f) => f.id === fileId))).toBe(true);

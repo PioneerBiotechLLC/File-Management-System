@@ -50,6 +50,12 @@ export function filingYear(docDate: Date | null, uploadedAt: Date, timezone: str
   return Number(new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric" }).format(uploadedAt));
 }
 
+/** Both candidate years, so a customer's specifications can stay together under the upload year (see suggestionFor). */
+export type YearChoice = { doc: number; uploaded: number };
+export function yearChoice(docDate: Date | null, uploadedAt: Date, timezone: string): YearChoice {
+  return { doc: filingYear(docDate, uploadedAt, timezone), uploaded: filingYear(null, uploadedAt, timezone) };
+}
+
 export const destinationInput = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("folder"), folderId: z.string().min(1) }),
   z.object({
@@ -99,9 +105,11 @@ export function suggestionFor(
   input: { folderId: string | null; trading: unknown; confidence: number | null; reason: string | null },
   ctx: Pick<FileContext, "writable" | "paths">,
   parties: PartyRow[],
-  year: number,
+  yearOrChoice: number | YearChoice,
   materials: MaterialRow[] = [],
 ): FilingSuggestion | null {
+  // A customer's specifications are revised over many years; they are filed under the year they came in, so the folder stays together.
+  const yearOf = (kind: string) => (typeof yearOrChoice === "number" ? yearOrChoice : kind === "specifications" ? yearOrChoice.uploaded : yearOrChoice.doc);
   const base = { confidence: input.confidence ?? 0, reason: input.reason ?? "" };
   if (input.folderId && ctx.writable.has(input.folderId)) {
     return { ...base, destination: { kind: "folder", folderId: input.folderId }, path: ctx.paths.get(input.folderId) ?? "", newParty: false, newMaterial: false, seenAs: null };
@@ -114,7 +122,7 @@ export function suggestionFor(
     // not a manufacturer's: it belongs in that customer's folder, whatever the AI chose.
     const customer = kind === "specifications" && printed ? matchParty(parties, "customer", printed) : null;
     if (customer) {
-      const destination: Destination = { kind: "trading", year, side: "customer", partyId: customer.id, partyName: customer.name, docKind: "specifications" };
+      const destination: Destination = { kind: "trading", year: yearOf(kind), side: "customer", partyId: customer.id, partyName: customer.name, docKind: "specifications" };
       return { ...base, destination, path: tradingPath(destination), newParty: false, newMaterial: false, seenAs: null };
     }
     const party = parties.find((p) => p.id === partyId && p.side === "supplier") ?? (printed ? matchParty(parties, "supplier", printed) : null);
@@ -138,7 +146,7 @@ export function suggestionFor(
   const printed = partyName ? cleanPartyName(partyName) : "";
   const party = parties.find((p) => p.id === partyId && p.side === side) ?? (printed ? matchParty(parties, side, printed) : null);
   if (!party && !printed) return null;
-  const destination: Destination = { kind: "trading", year, side, partyId: party?.id ?? null, partyName: party?.name ?? printed, docKind: kind };
+  const destination: Destination = { kind: "trading", year: yearOf(kind), side, partyId: party?.id ?? null, partyName: party?.name ?? printed, docKind: kind };
   return {
     ...base,
     destination,

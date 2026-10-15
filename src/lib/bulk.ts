@@ -1,7 +1,7 @@
 import type { Db } from "@/lib/db";
 import { UserError } from "@/lib/errors";
 import type { FileContext } from "@/lib/files";
-import { fileTo, filingYear, listMaterials, listParties, suggestionFor } from "@/lib/parties";
+import { fileTo, yearChoice, listMaterials, listParties, suggestionFor } from "@/lib/parties";
 import { reindexFile } from "@/lib/search-index";
 
 /**
@@ -47,7 +47,7 @@ export async function autoFileAfterRead(
   }
 
   const [parties, materials] = await Promise.all([listParties(prisma, ctx.orgId), listMaterials(prisma, ctx.orgId)]);
-  const year = filingYear(file.docDate, file.createdAt, company.timezone);
+  const year = yearChoice(file.docDate, file.createdAt, company.timezone);
   const suggestion = suggestionFor(
     { folderId: file.suggestedFolderId, trading: file.suggestedTrading, confidence: file.filingConfidence, reason: file.filingReason },
     ctx,

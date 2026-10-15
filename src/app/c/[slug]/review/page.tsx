@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { fileContext, listUnfiled } from "@/lib/files";
 import { MAX_READ_ATTEMPTS, READ_TIMEOUT_MS, summaryToForm } from "@/lib/intake";
-import { filingYear, listMaterials, listParties, suggestionFor } from "@/lib/parties";
+import { yearChoice, listMaterials, listParties, suggestionFor } from "@/lib/parties";
 import { can } from "@/lib/permissions";
 import { companyContext } from "@/lib/session";
 import { ReadingWatch } from "./reading-watch";
@@ -48,7 +48,7 @@ export default async function ReviewPage({ params, searchParams }: { params: Pro
         { folderId: f.suggestedFolderId, trading: f.suggestedTrading, confidence: f.filingConfidence, reason: f.filingReason },
         ctx,
         parties,
-        filingYear(f.docDate, f.createdAt, org.timezone),
+        yearChoice(f.docDate, f.createdAt, org.timezone),
         materials,
       ),
     };

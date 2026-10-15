@@ -6,7 +6,7 @@ import { UserError } from "@/lib/errors";
 import { extract } from "@/lib/extract";
 import { checkCanMove, type FileContext } from "@/lib/files";
 import { folderChoices, materialChoices, partyChoices, storedFiling } from "@/lib/intake";
-import { fileTo, filingYear, listMaterials, listParties, suggestionFor } from "@/lib/parties";
+import { fileTo, yearChoice, listMaterials, listParties, suggestionFor } from "@/lib/parties";
 import type { RefileItem, RefileScope } from "@/lib/refile-scopes";
 import { reindexFile } from "@/lib/search-index";
 import { getObject, head, objectKey } from "@/lib/storage";
@@ -95,7 +95,7 @@ export async function refileOne(prisma: Db, ctx: FileContext, company: Company, 
   const { analysis } = outcome;
   if (!analysis.readable || !filingIsUsable(analysis.filing)) return { status: "kept", at: here, reason: analysis.problem ?? "The AI could not tell where it belongs." };
 
-  const year = filingYear(file.docDate ?? analysis.docDate, file.createdAt, company.timezone);
+  const year = yearChoice(file.docDate ?? analysis.docDate, file.createdAt, company.timezone);
   const filing = storedFiling(analysis.filing);
   const suggestion = suggestionFor(
     { folderId: filing.suggestedFolderId, trading: filing.suggestedTrading, confidence: filing.filingConfidence, reason: filing.filingReason },

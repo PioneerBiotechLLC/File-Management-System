@@ -9,7 +9,7 @@ import { extract } from "@/lib/extract";
 import type { FileContext } from "@/lib/files";
 import { DOC_KIND_IDS, TECH_KIND_IDS, type DocKindId, type FilingSuggestion, type TechKindId } from "@/lib/file-kinds";
 import { suggestFolder, summaryChanged, type ConfirmedSummary } from "@/lib/filing";
-import { filingYear, listMaterials, listParties, suggestionFor, type MaterialRow, type PartyRow, type StoredTechnical, type StoredTrading } from "@/lib/parties";
+import { yearChoice, listMaterials, listParties, suggestionFor, type MaterialRow, type PartyRow, type StoredTechnical, type StoredTrading } from "@/lib/parties";
 import { can } from "@/lib/permissions";
 import { reindexFile } from "@/lib/search-index";
 import { getObject, head, objectKey } from "@/lib/storage";
@@ -389,7 +389,7 @@ export async function confirmSummary(
   await reindexFile(prisma, file.id);
 
   const [known, materials] = await Promise.all([listParties(prisma, ctx.orgId), listMaterials(prisma, ctx.orgId)]);
-  const year = filingYear(confirmed.docDate, file.createdAt, company.timezone);
+  const year = yearChoice(confirmed.docDate, file.createdAt, company.timezone);
   // An unchanged summary keeps the suggestion made while reading, if it still points somewhere usable.
   const kept = edited
     ? null
