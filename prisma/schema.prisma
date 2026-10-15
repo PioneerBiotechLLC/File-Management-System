@@ -48,13 +48,18 @@ enum PartySide {
 }
 
 /// regular: made by an admin or seeded. The rest are created when a document is filed:
-/// year (2026) / side (Customers, Suppliers) / party (Gulf Pharmacy) / doc (Invoices).
+/// year (2026) / side (Customers, Suppliers) / party (Gulf Pharmacy) / doc (Invoices), and
+/// tech_root (Technical) / tech_party (Maple Biotech) / material (MCC 102) / tech_doc (Certificates of Analysis).
 enum FolderKind {
   regular
   year
   side
   party
   doc
+  tech_root
+  tech_party
+  material
+  tech_doc
 }
 
 model Organization {
@@ -76,6 +81,7 @@ model Organization {
   auditLogs   AuditLog[]
   aiUsage     AiUsage[]
   parties     Party[]
+  materials    Material[]
 }
 
 /// A customer or supplier. A company that is both is two parties, one per side.
@@ -91,11 +97,33 @@ model Party {
   createdBy String
   createdAt DateTime  @default(now())
 
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  folders   Folder[]
+  files     StoredFile[]
+  materials Material[]
+
+  @@unique([orgId, side, key])
+}
+
+/// A material a supplier (its manufacturer) makes, whose technical documents are kept together:
+/// Technical / <supplier> / <material> / <kind>.
+model Material {
+  id        String   @id @default(cuid())
+  orgId     String
+  partyId   String
+  name      String
+  /// The name folded for matching (lowercase, no punctuation).
+  key       String
+  aliases   String[] @default([])
+  createdBy String
+  createdAt DateTime @default(now())
+
   org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  party   Party        @relation(fields: [partyId], references: [id], onDelete: Cascade)
   folders Folder[]
   files   StoredFile[]
 
-  @@unique([orgId, side, key])
+  @@unique([orgId, partyId, key])
 }
 
 model AppUser {
@@ -197,11 +225,14 @@ model Folder {
   side        PartySide?
   /// Set on party and doc folders.
   partyId     String?
-  /// Set on doc folders: an id from file-kinds.ts DOC_KINDS.
+  /// Set on doc folders (an id from file-kinds.ts DOC_KINDS) and tech_doc folders (TECH_KINDS).
   docKind     String?
+  /// Set on material and tech_doc folders.
+  materialId  String?
 
   org            Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
   party          Party?        @relation(fields: [partyId], references: [id], onDelete: SetNull)
+  material       Material?     @relation(fields: [materialId], references: [id], onDelete: SetNull)
   parent         Folder?       @relation("FolderTree", fields: [parentId], references: [id], onDelete: NoAction)
   children       Folder[]      @relation("FolderTree")
   grants         FolderGrant[]
@@ -260,6 +291,7 @@ model StoredFile {
   suggestedTrading    Json?
   /// The customer or supplier the file is filed under, if any.
   partyId             String?
+  materialId          String?
   filingConfidence    Float?
   /// One short sentence shown to the user.
   filingReason        String?
@@ -286,10 +318,12 @@ model StoredFile {
   suggestedFolder Folder?       @relation("FileSuggestedFolder", fields: [suggestedFolderId], references: [id], onDelete: SetNull)
   uploader        AppUser       @relation(fields: [uploadedBy], references: [id])
   party           Party?        @relation(fields: [partyId], references: [id], onDelete: SetNull)
+  material        Material?     @relation(fields: [materialId], references: [id], onDelete: SetNull)
   versions        FileVersion[]
 
   @@index([orgId, folderId, deletedAt])
   @@index([orgId, partyId])
+  @@index([orgId, materialId])
   @@index([orgId, status])
   @@index([orgId, sha256])
   @@index([searchVector], type: Gin)

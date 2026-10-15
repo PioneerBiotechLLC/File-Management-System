@@ -8,9 +8,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { db } from "@/lib/db";
 import { DOC_TYPE_LABELS, type DocType } from "@/lib/doc-types";
-import { docKindForType } from "@/lib/file-kinds";
+import { docKindForType, TECHNICAL_DOC_TYPES, techKindForType } from "@/lib/file-kinds";
 import { fileContext, getFile } from "@/lib/files";
-import { destinationOf, filingYear, listParties } from "@/lib/parties";
+import { destinationOf, filingYear, listMaterials, listParties } from "@/lib/parties";
 import { formatBytes, previewKind } from "@/lib/file-names";
 import { can } from "@/lib/permissions";
 import { companyContext } from "@/lib/session";
@@ -63,8 +63,14 @@ export default async function FilePage({ params }: { params: Promise<{ slug: str
     .map((f) => ({ id: f.id, path: ctx.paths.get(f.id) ?? f.name }))
     .sort((a, b) => a.path.localeCompare(b.path));
   const parties = canMove ? await listParties(prisma, org.id) : [];
-  const current = destinationOf(file.folderId, ctx, parties);
-  const moveDefaults = { year: filingYear(file.docDate, file.createdAt, org.timezone), docKind: docKindForType(file.docType as DocType | null) };
+  const materials = canMove ? await listMaterials(prisma, org.id) : [];
+  const current = destinationOf(file.folderId, ctx, parties, materials);
+  const moveDefaults = {
+    year: filingYear(file.docDate, file.createdAt, org.timezone),
+    docKind: docKindForType(file.docType as DocType | null),
+    techKind: techKindForType(file.docType as DocType | null),
+    technical: TECHNICAL_DOC_TYPES.includes(file.docType as DocType),
+  };
 
   const base = `/c/${slug}/files/${file.id}/download`;
   const preview = previewKind(file.mimeType);
@@ -183,6 +189,7 @@ export default async function FilePage({ params }: { params: Promise<{ slug: str
                   current={current}
                   defaults={moveDefaults}
                   parties={parties.map((p) => ({ id: p.id, side: p.side, name: p.name, aliases: p.aliases }))}
+                  materials={materials.map((m) => ({ id: m.id, partyId: m.partyId, name: m.name, aliases: m.aliases }))}
                   folders={folderOptions}
                 />
               )}

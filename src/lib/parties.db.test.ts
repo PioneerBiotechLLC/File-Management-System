@@ -26,7 +26,7 @@ vi.mock("@/lib/storage", async (importOriginal) => {
 const { createCompany } = await import("./companies");
 const { addMember } = await import("./users");
 const files = await import("./files");
-const { destinationOf, fileTo, filingYear, listParties, suggestionFor } = await import("./parties");
+const { destinationOf, fileTo, filingYear, listMaterials, listParties, suggestionFor } = await import("./parties");
 const { browseTrading } = await import("./browse");
 const { restructureFolders } = await import("./restructure");
 const { resetFiles } = await import("./reset");
@@ -165,8 +165,8 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
     const customer = parties.find((p) => p.side === "customer")!;
     const known = suggestionFor({ folderId: null, trading: { side: "customer", partyId: null, partyName: "GPharm Dubai", docKind: "invoices" }, confidence: 0.9, reason: "r" }, ctx, parties, 2026);
     expect(known).toMatchObject({ newParty: false, path: "2026 / Customers / Gulf Pharmacy LLC / Invoices", seenAs: "GPharm Dubai", destination: { partyId: customer.id } });
-    const fresh = suggestionFor({ folderId: null, trading: { side: "supplier", partyId: null, partyName: "Noor Chemicals", docKind: "coa" }, confidence: 0.6, reason: "r" }, ctx, parties, 2024);
-    expect(fresh).toMatchObject({ newParty: true, path: "2024 / Suppliers / Noor Chemicals / Certificates of Analysis" });
+    const fresh = suggestionFor({ folderId: null, trading: { side: "supplier", partyId: null, partyName: "Noor Chemicals", docKind: "contracts" }, confidence: 0.6, reason: "r" }, ctx, parties, 2024);
+    expect(fresh).toMatchObject({ newParty: true, path: "2024 / Suppliers / Noor Chemicals / Contracts" });
     expect(suggestionFor({ folderId: "gone", trading: null, confidence: 1, reason: "" }, ctx, parties, 2026)).toBeNull();
 
     const docFolder = ctx.folders.find((f) => f.kind === "doc" && f.docKind === "invoices" && f.year === 2026)!;
@@ -200,6 +200,49 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
 
     const again = await restructureFolders(prisma, old, "cli:test");
     expect(again).toMatchObject({ created: 0, bankMoved: false, retired: [], filesInRetired: 1 });
+  });
+
+  it("files technical documents under Technical / manufacturer / material / kind, matching materials by any spelling", async () => {
+    const admin = await ctxFor("admin");
+    const coa = await waiting("sara", "MCC102-batch-533.pdf");
+    await fileTo(prisma, admin, {
+      fileId: coa,
+      destination: { kind: "technical", partyId: null, partyName: "Signet Excipients Pvt. Ltd.", materialId: null, materialName: "Microcrystalline Cellulose 102", docKind: "coa" },
+    });
+    expect((await files.getFile(prisma, await ctxFor("admin"), coa))?.folderPath).toBe("Technical / Signet Excipients Pvt. Ltd. / Microcrystalline Cellulose 102 / Certificates of Analysis");
+    const maker = (await listParties(prisma, orgId)).find((p) => p.key === "signet excipients")!;
+    expect(maker.side).toBe("supplier");
+    const [material] = await listMaterials(prisma, orgId);
+    expect(material).toMatchObject({ partyId: maker.id, name: "Microcrystalline Cellulose 102", key: "microcrystalline cellulose 102" });
+    expect((await prisma.storedFile.findUniqueOrThrow({ where: { id: coa } })).materialId).toBe(material!.id);
+    const tree = await prisma.folder.findMany({ where: { orgId, kind: { in: ["tech_root", "tech_party", "material", "tech_doc"] } }, orderBy: { createdAt: "asc" } });
+    expect(tree.map((f) => [f.kind, f.name])).toEqual([
+      ["tech_root", "Technical"],
+      ["tech_party", "Signet Excipients Pvt. Ltd."],
+      ["material", "Microcrystalline Cellulose 102"],
+      ["tech_doc", "Certificates of Analysis"],
+    ]);
+    expect(tree[0]).toMatchObject({ sortOrder: -1, parentId: null });
+    expect(await prisma.auditLog.findFirst({ where: { orgId, action: "material.create" } })).toMatchObject({ after: { name: "Microcrystalline Cellulose 102", supplier: "Signet Excipients Pvt. Ltd." } });
+
+    // Same manufacturer and material in another spelling: no new folders, and the AI's stored suggestion resolves to them.
+    const sds = await waiting("sara", "MCC-102-SDS.pdf");
+    const suggestion = suggestionFor(
+      { folderId: null, trading: { tree: "technical", partyId: null, partyName: "SIGNET EXCIPIENTS", materialId: null, materialName: "MCC102", docKind: "sds" }, confidence: 0.9, reason: "r" },
+      admin,
+      await listParties(prisma, orgId),
+      2026,
+      await listMaterials(prisma, orgId),
+    );
+    expect(suggestion).toMatchObject({ newParty: false, newMaterial: true, path: "Technical / Signet Excipients Pvt. Ltd. / MCC102 / Safety Data Sheets" });
+    await fileTo(prisma, admin, { fileId: sds, destination: { ...suggestion!.destination, materialName: "Microcrystalline  Cellulose 102" } as never });
+    expect(await prisma.material.count({ where: { orgId } })).toBe(1);
+    expect((await files.getFile(prisma, await ctxFor("admin"), sds))?.folderPath).toBe("Technical / Signet Excipients Pvt. Ltd. / Microcrystalline Cellulose 102 / Safety Data Sheets");
+    expect(destinationOf((await prisma.storedFile.findUniqueOrThrow({ where: { id: sds } })).folderId, await ctxFor("admin"), await listParties(prisma, orgId), await listMaterials(prisma, orgId))).toMatchObject({
+      kind: "technical",
+      materialId: material!.id,
+      docKind: "sds",
+    });
   });
 
   it("bulk upload: files a confident AI read at once, and leaves unsure or unread files for Review", async () => {
@@ -236,7 +279,7 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
     const r = await resetFiles(prisma, orgId, "cli:test");
 
     expect(r.files).toBeGreaterThan(0);
-    expect(r.parties).toBe(3);
+    expect(r.parties).toBe(4);
     expect(await prisma.storedFile.count({ where: { orgId } })).toBe(0);
     expect(await prisma.fileVersion.count({ where: { file: { orgId } } })).toBe(0);
     expect(await prisma.party.count({ where: { orgId } })).toBe(0);

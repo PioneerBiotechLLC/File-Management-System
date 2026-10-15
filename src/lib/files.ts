@@ -539,12 +539,14 @@ export async function moveFile(prisma: Db, ctx: FileContext, input: { fileId: st
   const file = await checkCanMove(prisma, ctx, input.fileId);
   if (!ctx.writable.has(input.folderId)) throw new UserError("You cannot file into that folder.");
   if (file.folderId === input.folderId) return;
-  const partyId = ctx.folders.find((f) => f.id === input.folderId)?.partyId ?? null;
+  const target = ctx.folders.find((f) => f.id === input.folderId);
+  const partyId = target?.partyId ?? null;
+  const materialId = target?.materialId ?? null;
 
   await prisma.$transaction([
     prisma.storedFile.update({
       where: { id: file.id },
-      data: { folderId: input.folderId, partyId, status: "ready", filedBy: ctx.email, processingStartedAt: null },
+      data: { folderId: input.folderId, partyId, materialId, status: "ready", filedBy: ctx.email, processingStartedAt: null },
     }),
     prisma.auditLog.create({
       data: {

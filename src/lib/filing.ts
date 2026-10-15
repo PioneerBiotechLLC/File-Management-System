@@ -3,7 +3,7 @@ import { AiLimitError, callClaude, type AiCallContext } from "@/lib/ai";
 import { FILING_RULES, FILING_SCHEMA, filingChoices, filingInput, filingIsUsable, folderList, limitFiling, type Facts, type Filing, type FolderChoice } from "@/lib/analysis";
 import type { Db } from "@/lib/db";
 import { DOC_TYPE_LABELS, type DocType } from "@/lib/doc-types";
-import type { PartyChoice } from "@/lib/file-kinds";
+import type { MaterialChoice, PartyChoice } from "@/lib/file-kinds";
 
 type Tool = Anthropic.Beta.Messages.BetaTool;
 
@@ -54,6 +54,7 @@ type SuggestRequest = {
   company: { name: string; domain: string };
   folders: FolderChoice[];
   parties: PartyChoice[];
+  materials?: MaterialChoice[];
   summary: ConfirmedSummary;
 };
 
@@ -66,7 +67,7 @@ export function buildFolderRequest(req: SuggestRequest): Anthropic.Beta.Messages
     tool_choice: { type: "auto" },
     system: [
       { type: "text", text: SYSTEM_PROMPT },
-      { type: "text", text: folderList(req.company, req.folders, req.parties), cache_control: { type: "ephemeral" } },
+      { type: "text", text: folderList(req.company, req.folders, req.parties, req.materials), cache_control: { type: "ephemeral" } },
     ],
     messages: [{ role: "user", content: `<summary>\n${summaryText(req.summary).replaceAll("</summary>", "<\\/summary>")}\n</summary>\n\nDecide where it belongs and call choose_folder.` }],
   };

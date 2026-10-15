@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { fileContext, listUnfiled } from "@/lib/files";
 import { MAX_READ_ATTEMPTS, READ_TIMEOUT_MS, summaryToForm } from "@/lib/intake";
-import { filingYear, listParties, suggestionFor } from "@/lib/parties";
+import { filingYear, listMaterials, listParties, suggestionFor } from "@/lib/parties";
 import { can } from "@/lib/permissions";
 import { companyContext } from "@/lib/session";
 import { ReadingWatch } from "./reading-watch";
@@ -17,13 +17,14 @@ export default async function ReviewPage({ params, searchParams }: { params: Pro
   if (!can(role, "review.accept")) notFound();
 
   const ctx = await fileContext(db(), { orgId: org.id, userId: user.id, email: user.email, role });
-  const [waiting, parties] = await Promise.all([listUnfiled(db(), ctx), listParties(db(), org.id)]);
+  const [waiting, parties, materials] = await Promise.all([listUnfiled(db(), ctx), listParties(db(), org.id), listMaterials(db(), org.id)]);
   // Year folders are reached through the customer/supplier choice, not listed here.
   const folders = ctx.folders
     .filter((f) => f.kind === "regular" && f.isActive && ctx.writable.has(f.id))
     .map((f) => ({ id: f.id, path: ctx.paths.get(f.id) ?? f.name }))
     .sort((a, b) => a.path.localeCompare(b.path));
   const partyChoices = parties.map((p) => ({ id: p.id, side: p.side, name: p.name, aliases: p.aliases }));
+  const materialChoices = materials.map((m) => ({ id: m.id, partyId: m.partyId, name: m.name, aliases: m.aliases }));
   const formatDate = new Intl.DateTimeFormat("en-GB", { timeZone: org.timezone, dateStyle: "medium", timeStyle: "short" });
   const now = Date.now();
 
@@ -48,6 +49,7 @@ export default async function ReviewPage({ params, searchParams }: { params: Pro
         ctx,
         parties,
         filingYear(f.docDate, f.createdAt, org.timezone),
+        materials,
       ),
     };
   });
@@ -69,7 +71,7 @@ export default async function ReviewPage({ params, searchParams }: { params: Pro
       ) : (
         <div className="grid gap-4">
           {ordered.map((f) => (
-            <ReviewCard key={f.id} slug={slug} file={f} parties={partyChoices} folders={folders} focused={f.id === focusId} />
+            <ReviewCard key={f.id} slug={slug} file={f} parties={partyChoices} materials={materialChoices} folders={folders} focused={f.id === focusId} />
           ))}
         </div>
       )}

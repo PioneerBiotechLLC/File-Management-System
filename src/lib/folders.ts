@@ -248,6 +248,7 @@ export async function loadFolderAccess(prisma: Db, orgId: string, userId: string
         side: true,
         partyId: true,
         docKind: true,
+        materialId: true,
       },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
     }),

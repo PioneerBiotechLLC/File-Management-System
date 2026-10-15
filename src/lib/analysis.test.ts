@@ -20,7 +20,7 @@ vi.mock("@/lib/ai", async (importOriginal) => {
   };
 });
 
-const { ANALYSIS_TOOL, AnalysisError, analyzeFile, buildAnalysisRequest, parseAnalysis } = await import("./analysis");
+const { ANALYSIS_TOOL, AnalysisError, analyzeFile, buildAnalysisRequest, folderList, parseAnalysis } = await import("./analysis");
 const { AiLimitError } = await import("@/lib/ai");
 const { buildFolderRequest, suggestFolder, summaryChanged } = await import("@/lib/filing");
 
@@ -39,6 +39,8 @@ const trading = (overrides: Record<string, unknown> = {}) => ({
   side: "customer",
   partyId: "gulf",
   partyName: "Gulf Pharmacy L.L.C.",
+  materialId: null,
+  materialName: null,
   docKind: "quotations",
   folderId: null,
   confidence: 0.92,
@@ -50,6 +52,8 @@ const inFolder = (folderId: string, overrides: Record<string, unknown> = {}) => 
   side: null,
   partyId: null,
   partyName: null,
+  materialId: null,
+  materialName: null,
   docKind: null,
   folderId,
   confidence: 0.8,
@@ -131,6 +135,19 @@ describe("parseAnalysis", () => {
     expect(fresh).toMatchObject({ placement: "trading", partyId: null, partyName: "Noor Trading" });
     const wrongSide = parseAnalysis(validInput({ filing: trading({ side: "supplier" }) }), allowed).filing;
     expect(wrongSide).toMatchObject({ side: "supplier", partyId: null, partyName: "Gulf Pharmacy L.L.C." });
+  });
+
+  it("keeps a technical filing with a supplier and a material, and drops a material that is not the supplier's", () => {
+    const withMaterials = { ...allowed, parties: new Map([["gulf", "customer" as const], ["maple", "supplier" as const]]), materials: new Map([["mcc", "maple"]]) };
+    const technical = (overrides: Record<string, unknown> = {}) =>
+      trading({ placement: "technical", side: null, partyId: "maple", partyName: "Maple Biotech", materialId: "mcc", materialName: "MCC 102", docKind: "coa", ...overrides });
+    expect(parseAnalysis(validInput({ filing: technical() }), withMaterials).filing).toMatchObject({ placement: "technical", side: "supplier", partyId: "maple", materialId: "mcc", docKind: "coa" });
+    // A material that belongs to another manufacturer is kept only by name; a customer cannot be a manufacturer.
+    expect(parseAnalysis(validInput({ filing: technical({ partyId: "gulf", partyName: "Gulf Pharmacy" }) }), withMaterials).filing).toMatchObject({ partyId: null, partyName: "Gulf Pharmacy", materialId: null, materialName: "MCC 102" });
+    // A commercial kind is not a technical one, and the other way round.
+    expect(parseAnalysis(validInput({ filing: technical({ docKind: "invoices" }) }), withMaterials).filing).toMatchObject({ placement: "folder", confidence: 0 });
+    expect(parseAnalysis(validInput({ filing: trading({ docKind: "coa" }) }), withMaterials).filing).toMatchObject({ placement: "folder", confidence: 0 });
+    expect(folderList({ name: "API Pharma", domain: "api-pharma.net" }, folders, parties, [{ id: "mcc", partyId: "gulf", name: "MCC 102", aliases: ["mcc102"] }])).toContain("- mcc | Gulf Pharmacy | MCC 102 | also: mcc102");
   });
 
   it("gives no filing when a customer/supplier answer is incomplete", () => {

@@ -22,11 +22,12 @@ export async function resetFiles(prisma: Db, orgId: string, actorEmail: string):
   await prisma.storedFile.deleteMany({ where: { orgId } });
   const objects = await removePrefix(`${orgId}/`);
 
-  // Deepest first: a folder cannot be deleted while it has children.
+  // Deepest first: a folder cannot be deleted while it has children. Both trees go.
   let folders = 0;
-  for (const kind of ["doc", "party", "side", "year"] as const) {
+  for (const kind of ["doc", "party", "side", "year", "tech_doc", "material", "tech_party", "tech_root"] as const) {
     folders += (await prisma.folder.deleteMany({ where: { orgId, kind } })).count;
   }
+  await prisma.material.deleteMany({ where: { orgId } });
   const parties = (await prisma.party.deleteMany({ where: { orgId } })).count;
 
   await prisma.auditLog.create({

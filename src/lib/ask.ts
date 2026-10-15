@@ -111,7 +111,7 @@ function systemFor(ctx: FileContext, company: { name: string; timezone: string }
   const today = new Intl.DateTimeFormat("en-CA", { timeZone: company.timezone, dateStyle: "short" }).format(now);
   // Company folders, years and Customers/Suppliers; a customer is found by name, not by folder.
   const folders = ctx.folders
-    .filter((f) => ctx.visible.has(f.id) && (f.kind === "regular" || f.kind === "year" || f.kind === "side"))
+    .filter((f) => ctx.visible.has(f.id) && ["regular", "year", "side", "tech_root", "tech_party"].includes(f.kind))
     .slice(0, 300)
     .map((f) => `- ${f.id} | ${ctx.paths.get(f.id) ?? f.name}`)
     .join("\n");

@@ -5,7 +5,7 @@ import { checkBudget, type LimitReason } from "@/lib/ai-limits";
 import { DOC_TYPES } from "@/lib/doc-types";
 import type { Db } from "@/lib/db";
 import type { Extraction } from "@/lib/extract";
-import { DOC_KIND_IDS, SIDES, cleanPartyName, type PartyChoice, type PartySide } from "@/lib/file-kinds";
+import { DOC_KIND_IDS, SIDES, TECH_KIND_IDS, cleanPartyName, type DocKindId, type MaterialChoice, type PartyChoice, type PartySide, type TechKindId } from "@/lib/file-kinds";
 
 type MessageParams = Anthropic.Beta.Messages.MessageCreateParamsNonStreaming;
 type Tool = Anthropic.Beta.Messages.BetaTool;
@@ -24,13 +24,19 @@ export type FolderChoice = { id: string; path: string; description: string | nul
 
 /** How a document is filed; shared by the reading model and the folder-choice model. */
 export const FILING_RULES = `Filing rules ("we" and "our company" mean the company named with the lists):
-- placement "trading" for a document exchanged between us and one customer or supplier: quotations, purchase orders, order confirmations, delivery notes, invoices, credit notes, certificates of analysis for goods we bought or sold, contracts with them, their price lists, payments and receipts, shipping and customs papers, and letters or emails with them. These are kept per year, then customers or suppliers, then the company, then the kind of document.
+- placement "technical" for a document about a material rather than a deal: a certificate of analysis, a specification, a technical or product data sheet, a safety data sheet (MSDS/SDS), a stability or test report for one material. These are kept as Technical, then the manufacturer, then the material, then the kind of document.
+  - side: "supplier". partyId / partyName: the manufacturer of the material as printed (the maker, not the distributor we bought it from), matched to the list the same way as below.
+  - materialId: the id from the materials list when it is the same material from the same manufacturer, whatever the spelling, grade abbreviation or pack size. Otherwise null.
+  - materialName: the material's name as printed, with its grade or type (for example "Microcrystalline Cellulose 102"), without batch numbers or quantities. Never a brand of ours.
+  - docKind: coa (certificate of analysis), specifications (specifications, technical and product data sheets), sds (safety data sheets) or other_technical (stability, test and method reports about the material).
+  - folderId: null.
+- placement "trading" for a document exchanged between us and one customer or supplier: quotations, purchase orders, order confirmations, delivery notes, invoices, credit notes, contracts with them, their price lists, payments and receipts, shipping and customs papers, and letters or emails with them. These are kept per year, then customers or suppliers, then the company, then the kind of document.
   - side: "customer" when that company buys from us (we are the seller); "supplier" when we buy from them.
   - partyId: the id from the customers and suppliers list when it is the same company on the same side, whatever the spelling: capitals, spaces or punctuation (ARABLAB, Arab Lab and ARAB-LAB are one company), with or without LLC, FZE, Ltd and the like, or a short form of the listed name. Only null when no listed company is this one.
   - partyName: that company's name as printed, without legal forms such as LLC, L.L.C., FZE, FZCO, Ltd or Co. Never our own company.
-  - docKind: quotations, purchase_orders, delivery_notes, invoices, coa (certificate of analysis), contracts, price_lists, payments (payments, receipts, remittances, statements of account), shipping (bills of lading, airway bills, packing lists, certificates of origin, customs papers) or correspondence (anything else with them).
-  - folderId: null.
-- placement "folder" for everything else: our licences and GMP certificates, registration files, SOPs, employee records, our company documents, marketing material, bank statements. folderId is the id of the best folder from the company folders list; side, partyId, partyName and docKind are null.
+  - docKind: quotations, purchase_orders, delivery_notes, invoices, contracts, price_lists, payments (payments, receipts, remittances, statements of account), shipping (bills of lading, airway bills, packing lists, certificates of origin, customs papers) or correspondence (anything else with them).
+  - materialId, materialName, folderId: null.
+- placement "folder" for everything else: our licences and GMP certificates, registration files, SOPs, employee records, our company documents, marketing material, bank statements. folderId is the id of the best folder from the company folders list; side, partyId, partyName, materialId, materialName and docKind are null.
 - confidence: 0 to 1. Above 0.9 when it clearly belongs there; 0.5 to 0.75 when two places are plausible; below 0.5 when unsure.
 - reason: one short English sentence a colleague would understand, for example "Invoice we issued to a customer".`;
 
@@ -95,13 +101,15 @@ const nullableEnum = (values: readonly string[]) => ({ anyOf: [{ type: "string",
 export const FILING_SCHEMA = {
   type: "object" as const,
   additionalProperties: false,
-  required: ["placement", "side", "partyId", "partyName", "docKind", "folderId", "confidence", "reason"],
+  required: ["placement", "side", "partyId", "partyName", "materialId", "materialName", "docKind", "folderId", "confidence", "reason"],
   properties: {
-    placement: { type: "string", enum: ["trading", "folder"] },
+    placement: { type: "string", enum: ["trading", "technical", "folder"] },
     side: nullableEnum(SIDES),
     partyId: nullableString,
     partyName: nullableString,
-    docKind: nullableEnum(DOC_KIND_IDS),
+    materialId: nullableString,
+    materialName: nullableString,
+    docKind: nullableEnum([...DOC_KIND_IDS, ...TECH_KIND_IDS]),
     folderId: nullableString,
     confidence: { type: "number", description: "0 to 1" },
     reason: { type: "string" },
@@ -165,16 +173,20 @@ export const factsInput = z.object({
 });
 
 /** Unknown values fall back to null, so a slightly off answer is filed by hand rather than failing the read. */
+const cleanName = z
+  .string()
+  .nullable()
+  .transform((v) => (v ? cleanPartyName(v) || null : null))
+  .catch(null);
+
 export const filingInput = z.object({
-  placement: z.enum(["trading", "folder"]).catch("folder"),
+  placement: z.enum(["trading", "technical", "folder"]).catch("folder"),
   side: z.enum(SIDES).nullable().catch(null),
   partyId: z.string().nullable().catch(null),
-  partyName: z
-    .string()
-    .nullable()
-    .transform((v) => (v ? cleanPartyName(v) || null : null))
-    .catch(null),
-  docKind: z.enum(DOC_KIND_IDS).nullable().catch(null),
+  partyName: cleanName,
+  materialId: z.string().nullable().catch(null).default(null),
+  materialName: cleanName.default(null),
+  docKind: z.enum([...DOC_KIND_IDS, ...TECH_KIND_IDS]).nullable().catch(null),
   folderId: z.string().nullable(),
   confidence: z.number().transform((c) => (Number.isFinite(c) ? Math.min(1, Math.max(0, c)) : 0)),
   reason: z.string().transform(clip(300)),
@@ -206,10 +218,13 @@ export function storedFacts(parsed: z.output<typeof factsInput>): Facts {
   return { ...facts, ...(expiryDate ? { expiryDate: expiryDate.toISOString().slice(0, 10) } : {}) };
 }
 
-const NO_FILING: Omit<Filing, "reason"> = { placement: "folder", side: null, partyId: null, partyName: null, docKind: null, folderId: null, confidence: 0 };
+const NO_FILING: Omit<Filing, "reason"> = { placement: "folder", side: null, partyId: null, partyName: null, materialId: null, materialName: null, docKind: null, folderId: null, confidence: 0 };
 
-/** What the model may file into: the uploader's writable company folders and the known parties. */
-export type FilingChoices = { folderIds: ReadonlySet<string>; parties: ReadonlyMap<string, PartySide> };
+/** What the model may file into: the uploader's writable company folders, the known parties, and materials (id → manufacturer id). */
+export type FilingChoices = { folderIds: ReadonlySet<string>; parties: ReadonlyMap<string, PartySide>; materials?: ReadonlyMap<string, string> };
+
+const isDocKind = (k: string | null): k is DocKindId => (DOC_KIND_IDS as readonly string[]).includes(k ?? "");
+const isTechKind = (k: string | null): k is TechKindId => (TECH_KIND_IDS as readonly string[]).includes(k ?? "");
 
 /**
  * Keeps only a usable answer: a folder the uploader was offered, or a customer/supplier with a side,
@@ -219,12 +234,24 @@ export function limitFiling(filing: Filing, allowed: FilingChoices): Filing {
   if (filing.placement === "folder") {
     return filing.folderId && allowed.folderIds.has(filing.folderId) ? { ...NO_FILING, folderId: filing.folderId, confidence: filing.confidence, reason: filing.reason } : { ...NO_FILING, reason: filing.reason };
   }
+  if (filing.placement === "technical") {
+    // The manufacturer is always a supplier; the material must belong to it.
+    const partyId = filing.partyId && allowed.parties.get(filing.partyId) === "supplier" ? filing.partyId : null;
+    const materialId = filing.materialId && partyId && allowed.materials?.get(filing.materialId) === partyId ? filing.materialId : null;
+    if (!isTechKind(filing.docKind) || (!partyId && !filing.partyName) || (!materialId && !filing.materialName)) return { ...NO_FILING, reason: filing.reason };
+    return { ...filing, side: "supplier", partyId, materialId, folderId: null };
+  }
   const partyId = filing.partyId && filing.side && allowed.parties.get(filing.partyId) === filing.side ? filing.partyId : null;
-  if (!filing.side || !filing.docKind || (!partyId && !filing.partyName)) return { ...NO_FILING, reason: filing.reason };
-  return { ...filing, partyId, folderId: null };
+  if (!filing.side || !isDocKind(filing.docKind) || (!partyId && !filing.partyName)) return { ...NO_FILING, reason: filing.reason };
+  return { ...filing, partyId, materialId: null, materialName: null, folderId: null };
 }
 
-export const filingIsUsable = (f: Filing) => (f.placement === "folder" ? Boolean(f.folderId) : Boolean(f.side && f.docKind && (f.partyId || f.partyName)));
+export const filingIsUsable = (f: Filing) =>
+  f.placement === "folder"
+    ? Boolean(f.folderId)
+    : f.placement === "technical"
+      ? Boolean(isTechKind(f.docKind) && (f.partyId || f.partyName) && (f.materialId || f.materialName))
+      : Boolean(f.side && isDocKind(f.docKind) && (f.partyId || f.partyName));
 
 /** Validates Claude's tool input. */
 export function parseAnalysis(input: unknown, allowed: FilingChoices): Analysis {
@@ -239,27 +266,38 @@ type AnalysisRequest = {
   folders: FolderChoice[];
   /** Every customer and supplier the company has. */
   parties: PartyChoice[];
+  /** Every material, with its manufacturer. */
+  materials?: MaterialChoice[];
   fileName: string;
   uploadedAt: Date;
   extraction: Exclude<Extraction, { kind: "unreadable" }>;
 };
 
-export function filingChoices(req: Pick<AnalysisRequest, "folders" | "parties">): FilingChoices {
-  return { folderIds: new Set(req.folders.map((f) => f.id)), parties: new Map(req.parties.map((p) => [p.id, p.side])) };
+export function filingChoices(req: Pick<AnalysisRequest, "folders" | "parties" | "materials">): FilingChoices {
+  return {
+    folderIds: new Set(req.folders.map((f) => f.id)),
+    parties: new Map(req.parties.map((p) => [p.id, p.side])),
+    materials: new Map((req.materials ?? []).map((m) => [m.id, m.partyId])),
+  };
 }
 
 const oneLine = (s: string | null | undefined) => (s ?? "").replace(/\s+/g, " ").trim();
 
-export function folderList(company: AnalysisRequest["company"], folders: FolderChoice[], parties: PartyChoice[]): string {
+export function folderList(company: AnalysisRequest["company"], folders: FolderChoice[], parties: PartyChoice[], materials: MaterialChoice[] = []): string {
   const folderLines = folders.map((f) => `- ${f.id} | ${f.path} | ${oneLine(f.description) || "(no description)"}`);
   const partyLines = parties.map((p) => `- ${p.id} | ${p.side} | ${oneLine(p.name)}${p.aliases?.length ? ` | also: ${p.aliases.join(", ")}` : ""}`);
+  const byParty = new Map(parties.map((p) => [p.id, p.name]));
+  const materialLines = materials.map((m) => `- ${m.id} | ${oneLine(byParty.get(m.partyId) ?? m.partyId)} | ${oneLine(m.name)}${m.aliases?.length ? ` | also: ${m.aliases.join(", ")}` : ""}`);
   return `Company: ${company.name} (email domain ${company.domain}). "We" and "our company" mean this company.
 
 Company folders, for documents that are not with one customer or supplier (id | path | what belongs there):
 ${folderLines.join("\n") || "(none)"}
 
 Customers and suppliers we already have (id | side | name | other spellings seen):
-${partyLines.join("\n") || "(none yet: give partyName and leave partyId null)"}`;
+${partyLines.join("\n") || "(none yet: give partyName and leave partyId null)"}
+
+Materials we already have, with their manufacturer (id | manufacturer | name | other spellings seen):
+${materialLines.join("\n") || "(none yet: give materialName and leave materialId null)"}`;
 }
 
 /** The request for one file. Tool and instructions come first and never change, so they are cached. */
@@ -290,7 +328,7 @@ The document was provided ${how}.`;
     tool_choice: { type: "auto" },
     system: [
       { type: "text", text: SYSTEM_PROMPT },
-      { type: "text", text: folderList(req.company, req.folders, req.parties), cache_control: { type: "ephemeral" } },
+      { type: "text", text: folderList(req.company, req.folders, req.parties, req.materials), cache_control: { type: "ephemeral" } },
     ],
     messages: [{ role: "user", content }],
   };

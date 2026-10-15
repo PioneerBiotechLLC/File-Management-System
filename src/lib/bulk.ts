@@ -1,7 +1,7 @@
 import type { Db } from "@/lib/db";
 import { UserError } from "@/lib/errors";
 import type { FileContext } from "@/lib/files";
-import { fileTo, filingYear, listParties, suggestionFor } from "@/lib/parties";
+import { fileTo, filingYear, listMaterials, listParties, suggestionFor } from "@/lib/parties";
 import { reindexFile } from "@/lib/search-index";
 
 /**
@@ -46,13 +46,14 @@ export async function autoFileAfterRead(
     return { action: "review", reason: file.aiError ? `The AI could not read it: ${file.aiError}` : "The AI did not read it." };
   }
 
-  const parties = await listParties(prisma, ctx.orgId);
+  const [parties, materials] = await Promise.all([listParties(prisma, ctx.orgId), listMaterials(prisma, ctx.orgId)]);
   const year = filingYear(file.docDate, file.createdAt, company.timezone);
   const suggestion = suggestionFor(
     { folderId: file.suggestedFolderId, trading: file.suggestedTrading, confidence: file.filingConfidence, reason: file.filingReason },
     ctx,
     parties,
     year,
+    materials,
   );
   if (!suggestion) return { action: "review", reason: "The AI could not tell where it belongs." };
   if (suggestion.confidence < AUTO_FILE_THRESHOLD) {
@@ -72,6 +73,6 @@ export async function autoFileAfterRead(
     action: "filed",
     path: suggestion.path,
     confidence: suggestion.confidence,
-    newParty: suggestion.newParty && suggestion.destination.kind === "trading" ? suggestion.destination.partyName : null,
+    newParty: suggestion.newParty && suggestion.destination.kind !== "folder" ? suggestion.destination.partyName : null,
   };
 }

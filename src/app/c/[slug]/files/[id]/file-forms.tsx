@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { DOC_TYPES, DOC_TYPE_LABELS } from "@/lib/doc-types";
-import type { Destination, DocKindId, PartyChoice } from "@/lib/file-kinds";
+import type { Destination, DocKindId, MaterialChoice, PartyChoice, TechKindId } from "@/lib/file-kinds";
 
 type Notice = { ok: boolean; text: string } | null;
 
@@ -28,21 +28,23 @@ export function MoveForm({
   current,
   defaults,
   parties,
+  materials,
   folders,
 }: {
   slug: string;
   fileId: string;
   /** Where the file is now; null while unfiled. */
   current: Destination | null;
-  defaults: { year: number; docKind: DocKindId };
+  defaults: { year: number; docKind: DocKindId; techKind: TechKindId; technical: boolean };
   parties: PartyChoice[];
+  materials: MaterialChoice[];
   folders: { id: string; path: string }[];
 }) {
   const router = useRouter();
   const [draft, setDraft] = useState(() => draftFrom(current, defaults));
   const [notice, setNotice] = useState<Notice>(null);
   const [pending, start] = useTransition();
-  const resolved = resolveDraft(draft, parties, folders);
+  const resolved = resolveDraft(draft, parties, folders, materials);
   const unchanged = resolved !== null && current !== null && JSON.stringify(resolved.destination) === JSON.stringify(current);
 
   return (
@@ -59,7 +61,7 @@ export function MoveForm({
       }}
     >
       <Label>{current ? "Move to" : "File in"}</Label>
-      <DestinationPicker draft={draft} onChange={setDraft} parties={parties} folders={folders} />
+      <DestinationPicker draft={draft} onChange={setDraft} parties={parties} materials={materials} folders={folders} />
       <div>
         <Button type="submit" disabled={pending || !resolved || unchanged}>
           {current ? "Move" : "File it"}

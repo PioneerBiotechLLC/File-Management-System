@@ -7,9 +7,9 @@ import { aiEnv, limitsEnv } from "@/lib/env";
 import { UserError } from "@/lib/errors";
 import { extract } from "@/lib/extract";
 import type { FileContext } from "@/lib/files";
-import type { FilingSuggestion } from "@/lib/file-kinds";
+import { DOC_KIND_IDS, TECH_KIND_IDS, type DocKindId, type FilingSuggestion, type TechKindId } from "@/lib/file-kinds";
 import { suggestFolder, summaryChanged, type ConfirmedSummary } from "@/lib/filing";
-import { filingYear, listParties, suggestionFor, type PartyRow, type StoredTrading } from "@/lib/parties";
+import { filingYear, listMaterials, listParties, suggestionFor, type MaterialRow, type PartyRow, type StoredTechnical, type StoredTrading } from "@/lib/parties";
 import { can } from "@/lib/permissions";
 import { reindexFile } from "@/lib/search-index";
 import { getObject, head, objectKey } from "@/lib/storage";
@@ -63,12 +63,17 @@ function folderChoices(ctx: FileContext) {
 }
 
 const partyChoices = (parties: PartyRow[]) => parties.map((p) => ({ id: p.id, side: p.side, name: p.name, aliases: p.aliases }));
+const materialChoices = (materials: MaterialRow[]) => materials.map((m) => ({ id: m.id, partyId: m.partyId, name: m.name, aliases: m.aliases }));
 
-/** How a filing answer is kept on the file until the uploader confirms it. */
+/** How a filing answer is kept on the file until the uploader confirms it (one column for both trees). */
 function storedFiling(filing: Filing | null) {
   if (!filing) return { suggestedFolderId: null, suggestedTrading: Prisma.DbNull, filingConfidence: null, filingReason: null };
-  const trading: StoredTrading | null =
-    filing.placement === "trading" && filing.side && filing.docKind ? { side: filing.side, partyId: filing.partyId, partyName: filing.partyName, docKind: filing.docKind } : null;
+  const trading: StoredTrading | StoredTechnical | null =
+    filing.placement === "technical" && (TECH_KIND_IDS as readonly string[]).includes(filing.docKind ?? "")
+      ? { tree: "technical", partyId: filing.partyId, partyName: filing.partyName, materialId: filing.materialId, materialName: filing.materialName, docKind: filing.docKind as TechKindId }
+      : filing.placement === "trading" && filing.side && (DOC_KIND_IDS as readonly string[]).includes(filing.docKind ?? "")
+        ? { side: filing.side, partyId: filing.partyId, partyName: filing.partyName, docKind: filing.docKind as DocKindId }
+        : null;
   return {
     suggestedFolderId: filing.placement === "folder" ? filing.folderId : null,
     suggestedTrading: trading ?? Prisma.DbNull,
@@ -138,6 +143,7 @@ export async function readUpload(prisma: Db, ctx: FileContext, company: Company,
         company,
         folders: folderChoices(ctx),
         parties: partyChoices(await listParties(prisma, ctx.orgId)),
+        materials: materialChoices(await listMaterials(prisma, ctx.orgId)),
         fileName: file.originalName,
         uploadedAt: file.createdAt,
         extraction,
@@ -382,18 +388,18 @@ export async function confirmSummary(
 
   await reindexFile(prisma, file.id);
 
-  const known = await listParties(prisma, ctx.orgId);
+  const [known, materials] = await Promise.all([listParties(prisma, ctx.orgId), listMaterials(prisma, ctx.orgId)]);
   const year = filingYear(confirmed.docDate, file.createdAt, company.timezone);
   // An unchanged summary keeps the suggestion made while reading, if it still points somewhere usable.
   const kept = edited
     ? null
-    : suggestionFor({ folderId: file.suggestedFolderId, trading: file.suggestedTrading, confidence: file.filingConfidence, reason: file.filingReason }, ctx, known, year);
+    : suggestionFor({ folderId: file.suggestedFolderId, trading: file.suggestedTrading, confidence: file.filingConfidence, reason: file.filingReason }, ctx, known, year, materials);
   if (kept || !aiConfigured()) return { suggestion: kept };
 
   const chosen = await suggestFolder(
     prisma,
     { orgId: ctx.orgId, timezone: company.timezone, userId: ctx.userId, fileId: file.id },
-    { model: aiEnv().ANTHROPIC_MODEL_LIGHT, company, folders: folderChoices(ctx), parties: partyChoices(known), summary: confirmed },
+    { model: aiEnv().ANTHROPIC_MODEL_LIGHT, company, folders: folderChoices(ctx), parties: partyChoices(known), materials: materialChoices(materials), summary: confirmed },
   );
   const stored = storedFiling(chosen);
   await prisma.storedFile.update({ where: { id: file.id }, data: stored });
@@ -403,6 +409,7 @@ export async function confirmSummary(
       ctx,
       known,
       year,
+      materials,
     ),
   };
 }

@@ -7,15 +7,23 @@ import {
   DOC_KIND_IDS,
   SIDES,
   SIDE_FOLDERS,
+  TECH_KINDS,
+  TECH_KIND_IDS,
+  TECH_ROOT,
   cleanPartyName,
   docKind,
+  matchMaterial,
   matchParty,
+  materialKey,
   partyKey,
+  techKind,
+  technicalPath,
   tradingPath,
   type Destination,
   type DocKindId,
   type FilingSuggestion,
   type PartySide,
+  type TechKindId,
 } from "@/lib/file-kinds";
 import { checkCanMove, fileContext, moveFile, type FileContext } from "@/lib/files";
 
@@ -26,9 +34,14 @@ import { checkCanMove, fileContext, moveFile, type FileContext } from "@/lib/fil
  */
 
 export type PartyRow = { id: string; side: PartySide; name: string; key: string; aliases: string[] };
+export type MaterialRow = { id: string; partyId: string; name: string; key: string; aliases: string[] };
 
 export async function listParties(prisma: Db, orgId: string): Promise<PartyRow[]> {
   return prisma.party.findMany({ where: { orgId }, select: { id: true, side: true, name: true, key: true, aliases: true }, orderBy: { name: "asc" } });
+}
+
+export async function listMaterials(prisma: Db, orgId: string): Promise<MaterialRow[]> {
+  return prisma.material.findMany({ where: { orgId }, select: { id: true, partyId: true, name: true, key: true, aliases: true }, orderBy: { name: "asc" } });
 }
 
 /** The year a document is filed under: its own date, else the day it was uploaded (company time). */
@@ -47,16 +60,36 @@ export const destinationInput = z.discriminatedUnion("kind", [
     partyName: z.string().max(200),
     docKind: z.enum(DOC_KIND_IDS),
   }),
+  z.object({
+    kind: z.literal("technical"),
+    partyId: z.string().min(1).nullable(),
+    partyName: z.string().max(200),
+    materialId: z.string().min(1).nullable(),
+    materialName: z.string().max(200),
+    docKind: z.enum(TECH_KIND_IDS),
+  }),
 ]);
 
 /** The AI's customer/supplier suggestion, as stored on the file. */
 export const storedTrading = z.object({
+  tree: z.undefined().optional(),
   side: z.enum(SIDES),
   partyId: z.string().nullable(),
   partyName: z.string().nullable(),
   docKind: z.enum(DOC_KIND_IDS),
 });
 export type StoredTrading = z.infer<typeof storedTrading>;
+
+/** The AI's material suggestion, as stored on the file (same column, told apart by `tree`). */
+export const storedTechnical = z.object({
+  tree: z.literal("technical"),
+  partyId: z.string().nullable(),
+  partyName: z.string().nullable(),
+  materialId: z.string().nullable(),
+  materialName: z.string().nullable(),
+  docKind: z.enum(TECH_KIND_IDS),
+});
+export type StoredTechnical = z.infer<typeof storedTechnical>;
 
 /**
  * Turns a stored or fresh suggestion into something the uploader can confirm, checked against
@@ -67,10 +100,30 @@ export function suggestionFor(
   ctx: Pick<FileContext, "writable" | "paths">,
   parties: PartyRow[],
   year: number,
+  materials: MaterialRow[] = [],
 ): FilingSuggestion | null {
   const base = { confidence: input.confidence ?? 0, reason: input.reason ?? "" };
   if (input.folderId && ctx.writable.has(input.folderId)) {
-    return { ...base, destination: { kind: "folder", folderId: input.folderId }, path: ctx.paths.get(input.folderId) ?? "", newParty: false, seenAs: null };
+    return { ...base, destination: { kind: "folder", folderId: input.folderId }, path: ctx.paths.get(input.folderId) ?? "", newParty: false, newMaterial: false, seenAs: null };
+  }
+  const technical = storedTechnical.safeParse(input.trading);
+  if (technical.success) {
+    const { partyId, partyName, materialId, materialName, docKind: kind } = technical.data;
+    const printed = partyName ? cleanPartyName(partyName) : "";
+    const party = parties.find((p) => p.id === partyId && p.side === "supplier") ?? (printed ? matchParty(parties, "supplier", printed) : null);
+    if (!party && !printed) return null;
+    const printedMaterial = materialName ? cleanPartyName(materialName) : "";
+    const material = party ? (materials.find((m) => m.id === materialId && m.partyId === party.id) ?? (printedMaterial ? matchMaterial(materials, party.id, printedMaterial) : null)) : null;
+    if (!material && !printedMaterial) return null;
+    const destination: Destination = {
+      kind: "technical",
+      partyId: party?.id ?? null,
+      partyName: party?.name ?? printed,
+      materialId: material?.id ?? null,
+      materialName: material?.name ?? printedMaterial,
+      docKind: kind,
+    };
+    return { ...base, destination, path: technicalPath(destination), newParty: !party, newMaterial: !material, seenAs: party && printed && partyKey(printed) !== party.key ? printed : null };
   }
   const trading = storedTrading.safeParse(input.trading);
   if (!trading.success) return null;
@@ -84,6 +137,7 @@ export function suggestionFor(
     destination,
     path: tradingPath(destination),
     newParty: !party,
+    newMaterial: false,
     seenAs: party && printed && partyKey(printed) !== party.key ? printed : null,
   };
 }
@@ -93,14 +147,16 @@ async function ensureFolder(
   prisma: Db,
   orgId: string,
   createdBy: string,
-  where: { parentId: string | null; name: string; partyId?: string },
+  where: { parentId: string | null; name: string; partyId?: string; materialId?: string },
   data: Omit<Prisma.FolderUncheckedCreateInput, "orgId" | "parentId" | "name" | "createdBy">,
 ): Promise<string> {
-  const find = () =>
-    prisma.folder.findFirst({
-      where: { orgId, parentId: where.parentId, ...(where.partyId ? { OR: [{ partyId: where.partyId, kind: "party" }, { name: where.name }] } : { name: where.name }) },
-      select: { id: true },
-    });
+  // A company or material folder is found by what it stands for first, so a renamed one is still reused.
+  const byWhat: Prisma.FolderWhereInput = where.materialId
+    ? { OR: [{ materialId: where.materialId, kind: "material" }, { name: where.name }] }
+    : where.partyId
+      ? { OR: [{ partyId: where.partyId, kind: { in: ["party", "tech_party"] } }, { name: where.name }] }
+      : { name: where.name };
+  const find = () => prisma.folder.findFirst({ where: { orgId, parentId: where.parentId, ...byWhat }, select: { id: true } });
   const existing = await find();
   if (existing) return existing.id;
   try {
@@ -150,13 +206,58 @@ async function resolveParty(prisma: Db, ctx: FileContext, side: PartySide, party
   return party;
 }
 
+/** The manufacturer's material this document is about, created on first use; learns new spellings. */
+async function resolveMaterial(prisma: Db, ctx: FileContext, party: PartyRow, materialId: string | null, rawName: string): Promise<MaterialRow> {
+  const materials = await listMaterials(prisma, ctx.orgId);
+  const name = cleanPartyName(rawName);
+  let material = materialId ? (materials.find((m) => m.id === materialId && m.partyId === party.id) ?? null) : null;
+  if (materialId && !material) throw new UserError("That material no longer exists. Choose again.");
+  material ??= name ? matchMaterial(materials, party.id, name) : null;
+  const select = { id: true, partyId: true, name: true, key: true, aliases: true } as const;
+
+  if (!material) {
+    const key = materialKey(name);
+    if (key.length < 2) throw new UserError("Write the material's name.");
+    try {
+      material = await prisma.material.create({ data: { orgId: ctx.orgId, partyId: party.id, name, key, createdBy: ctx.email }, select });
+      await prisma.auditLog.create({
+        data: { orgId: ctx.orgId, userEmail: ctx.email, action: "material.create", targetType: "material", targetId: material.id, after: { name, supplier: party.name } },
+      });
+    } catch (error) {
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) throw error;
+      material = await prisma.material.findUniqueOrThrow({ where: { orgId_partyId_key: { orgId: ctx.orgId, partyId: party.id, key } }, select });
+    }
+  }
+  const key = materialKey(name);
+  if (key && key !== material.key && !material.aliases.includes(key) && material.aliases.length < 20) {
+    material = await prisma.material.update({ where: { id: material.id }, data: { aliases: { push: key } }, select });
+  }
+  return material;
+}
+
 /** The folder a destination means, creating the year, side, company and kind folders as needed. */
 async function resolveDestination(prisma: Db, ctx: FileContext, destination: Destination, seenAs: string | null): Promise<string> {
   if (destination.kind === "folder") return destination.folderId;
+  const by = ctx.email;
+  if (destination.kind === "technical") {
+    const party = await resolveParty(prisma, ctx, "supplier", destination.partyId, destination.partyName, seenAs);
+    const material = await resolveMaterial(prisma, ctx, party, destination.materialId, destination.materialName);
+    const kind = techKind(destination.docKind);
+    // Technical sits below the year folders and above the company's own folders.
+    const rootId = await ensureFolder(prisma, ctx.orgId, by, { parentId: null, name: TECH_ROOT.name }, { kind: "tech_root", nameAr: TECH_ROOT.nameAr, description: TECH_ROOT.description, sortOrder: -1 });
+    const partyFolderId = await ensureFolder(prisma, ctx.orgId, by, { parentId: rootId, name: party.name, partyId: party.id }, { kind: "tech_party", side: "supplier", partyId: party.id });
+    const materialFolderId = await ensureFolder(prisma, ctx.orgId, by, { parentId: partyFolderId, name: material.name, materialId: material.id }, { kind: "material", side: "supplier", partyId: party.id, materialId: material.id });
+    return ensureFolder(
+      prisma,
+      ctx.orgId,
+      by,
+      { parentId: materialFolderId, name: kind.name },
+      { kind: "tech_doc", side: "supplier", partyId: party.id, materialId: material.id, docKind: kind.id, sortOrder: TECH_KINDS.findIndex((k) => k.id === kind.id) },
+    );
+  }
   const { year, side } = destination;
   const party = await resolveParty(prisma, ctx, side, destination.partyId, destination.partyName, seenAs);
   const kind = docKind(destination.docKind);
-  const by = ctx.email;
   // Years sort newest first and above the company's own folders.
   const yearId = await ensureFolder(prisma, ctx.orgId, by, { parentId: null, name: String(year) }, { kind: "year", year, sortOrder: -year, description: `Documents exchanged with customers and suppliers in ${year}.` });
   const sideId = await ensureFolder(prisma, ctx.orgId, by, { parentId: yearId, name: SIDE_FOLDERS[side].name }, { kind: "side", year, side, sortOrder: SIDE_FOLDERS[side].sortOrder });
@@ -188,9 +289,16 @@ export async function fileTo(prisma: Db, ctx: FileContext, input: { fileId: stri
 }
 
 /** Where a filed file sits, as a destination the picker can start from. */
-export function destinationOf(folderId: string | null, ctx: Pick<FileContext, "folders">, parties: PartyRow[]): Destination | null {
+export function destinationOf(folderId: string | null, ctx: Pick<FileContext, "folders">, parties: PartyRow[], materials: MaterialRow[] = []): Destination | null {
   const folder = folderId ? ctx.folders.find((f) => f.id === folderId) : undefined;
   if (!folder) return null;
+  if (folder.kind === "tech_doc" && folder.partyId && folder.materialId && (TECH_KIND_IDS as string[]).includes(folder.docKind ?? "")) {
+    const party = parties.find((p) => p.id === folder.partyId);
+    const material = materials.find((m) => m.id === folder.materialId);
+    if (party && material) {
+      return { kind: "technical", partyId: party.id, partyName: party.name, materialId: material.id, materialName: material.name, docKind: folder.docKind as TechKindId };
+    }
+  }
   if (folder.kind === "doc" && folder.year && folder.side && folder.partyId && (DOC_KIND_IDS as string[]).includes(folder.docKind ?? "")) {
     const party = parties.find((p) => p.id === folder.partyId);
     if (party) return { kind: "trading", year: folder.year, side: folder.side, partyId: party.id, partyName: party.name, docKind: folder.docKind as DocKindId };

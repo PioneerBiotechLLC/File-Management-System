@@ -53,7 +53,7 @@ export async function recordRefusedSignIn(prisma: Db, rawEmail: string, reason: 
 export const LOG_CATEGORIES = {
   signins: { label: "Sign-ins", prefixes: ["auth."] },
   files: { label: "Files", prefixes: ["file."] },
-  folders: { label: "Folders", prefixes: ["folder.", "party."] },
+  folders: { label: "Folders", prefixes: ["folder.", "party.", "material."] },
   people: { label: "People", prefixes: ["user.", "membership."] },
   searches: { label: "Searches", prefixes: ["search."] },
   company: { label: "Company and AI", prefixes: ["org.", "ai."] },
@@ -214,6 +214,8 @@ export function describeEntry(entry: Entry, lookups: Lookups): LogPart[] {
 
     case "party.create":
       return [`Added the ${after.side === "supplier" ? "supplier" : "customer"} ${text(after.name) ?? ""}`];
+    case "material.create":
+      return [`Added the material ${text(after.name) ?? ""} from ${text(after.supplier) ?? "a supplier"}`];
     case "folder.create":
       return ["Created the folder ", target];
     case "folder.update":

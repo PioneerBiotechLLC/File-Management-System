@@ -11,8 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
-import { DOC_TYPES, DOC_TYPE_LABELS } from "@/lib/doc-types";
-import { SIDE_FOLDERS, docKindForType, type FilingSuggestion, type PartyChoice } from "@/lib/file-kinds";
+import { DOC_TYPES, DOC_TYPE_LABELS, type DocType } from "@/lib/doc-types";
+import { SIDE_FOLDERS, TECHNICAL_DOC_TYPES, docKindForType, techKindForType, type FilingSuggestion, type MaterialChoice, type PartyChoice } from "@/lib/file-kinds";
 import { formatBytes } from "@/lib/file-names";
 import type { SummaryFormInput } from "@/lib/intake";
 
@@ -38,7 +38,21 @@ type Folder = { id: string; path: string };
 const FIELD =
   "border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:ring-[3px]";
 
-export function ReviewCard({ slug, file, parties, folders, focused }: { slug: string; file: ReviewFile; parties: PartyChoice[]; folders: Folder[]; focused: boolean }) {
+export function ReviewCard({
+  slug,
+  file,
+  parties,
+  materials,
+  folders,
+  focused,
+}: {
+  slug: string;
+  file: ReviewFile;
+  parties: PartyChoice[];
+  materials: MaterialChoice[];
+  folders: Folder[];
+  focused: boolean;
+}) {
   const router = useRouter();
   const [step, setStep] = useState(file.step);
   const [suggestion, setSuggestion] = useState(file.suggestion);
@@ -109,7 +123,7 @@ export function ReviewCard({ slug, file, parties, folders, focused }: { slug: st
         />
       )}
       {step === "folder" && (
-        <FolderStep slug={slug} file={file} parties={parties} folders={folders} suggestion={suggestion} focused={focused} onBack={() => setStep("summary")} />
+        <FolderStep slug={slug} file={file} parties={parties} materials={materials} folders={folders} suggestion={suggestion} focused={focused} onBack={() => setStep("summary")} />
       )}
     </section>
   );
@@ -270,6 +284,7 @@ function FolderStep({
   slug,
   file,
   parties,
+  materials,
   folders,
   suggestion,
   focused,
@@ -278,20 +293,27 @@ function FolderStep({
   slug: string;
   file: ReviewFile;
   parties: PartyChoice[];
+  materials: MaterialChoice[];
   folders: Folder[];
   suggestion: FilingSuggestion | null;
   focused: boolean;
   onBack: () => void;
 }) {
   const router = useRouter();
-  const fallback = { year: Number(file.form.docDate.slice(0, 4)) || new Date().getFullYear(), docKind: docKindForType(file.form.docType || null) };
+  const docType = (file.form.docType || null) as DocType | null;
+  const fallback = {
+    year: Number(file.form.docDate.slice(0, 4)) || new Date().getFullYear(),
+    docKind: docKindForType(docType),
+    techKind: techKindForType(docType),
+    technical: docType !== null && TECHNICAL_DOC_TYPES.includes(docType),
+  };
   const [draft, setDraft] = useState(() => draftFrom(suggestion?.destination ?? null, fallback));
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   // A new suggestion (after editing the summary) replaces the draft.
   useEffect(() => setDraft(draftFrom(suggestion?.destination ?? null, fallback)), [suggestion]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const resolved = resolveDraft(draft, parties, folders);
+  const resolved = resolveDraft(draft, parties, folders, materials);
 
   return (
     <form
@@ -322,7 +344,7 @@ function FolderStep({
       ) : (
         <p className="text-muted-foreground text-sm">The AI had no suggestion for this file. Choose where it belongs.</p>
       )}
-      <DestinationPicker draft={draft} onChange={setDraft} parties={parties} folders={folders} autoFocus={focused} />
+      <DestinationPicker draft={draft} onChange={setDraft} parties={parties} materials={materials} folders={folders} autoFocus={focused} />
       <div className="flex flex-wrap items-center gap-3">
         <Button type="submit" disabled={pending || !resolved}>
           {pending ? "Filing…" : "Save here"}
