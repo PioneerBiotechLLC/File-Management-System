@@ -93,7 +93,7 @@ let client: Anthropic | null = null;
 export function anthropic(): Anthropic {
   if (!client) {
     // Bounded so a slow call cannot outlive the reading route; the uploader can retry by hand.
-    client = new Anthropic({ apiKey: aiEnv().ANTHROPIC_API_KEY, timeout: 90_000, maxRetries: 0 });
+    client = new Anthropic({ apiKey: aiEnv().ANTHROPIC_API_KEY, timeout: 90_000, maxRetries: 2 });
   }
   return client;
 }

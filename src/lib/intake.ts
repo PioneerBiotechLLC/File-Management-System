@@ -109,6 +109,8 @@ export async function readUpload(prisma: Db, ctx: FileContext, company: Company,
     ]);
   };
   const notRead = async (reason: string, retryable: boolean): Promise<ReadOutcome> => {
+    // Also in the server logs, so a run of failures can be diagnosed without the database.
+    console.error(`AI read ${retryable ? "failed" : "not possible"} for file ${file.id} (${file.name}): ${reason}`);
     await finish({ readStatus: retryable ? null : "not_read", aiError: reason }, { outcome: retryable ? "failed" : "not_read", reason });
     return { status: "not_read", reason, retryable };
   };

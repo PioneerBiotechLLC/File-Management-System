@@ -39,9 +39,11 @@ const BUSY_RETRIES = 30;
 const DONE: Phase[] = ["filed", "review", "duplicate", "skipped", "failed"];
 const SYSTEM_FILES = /^(\.DS_Store|Thumbs\.db|desktop\.ini|~\$.*|\._.*)$/;
 
-async function readAndFile(slug: string, fileId: string): Promise<AutoFileResult> {
+const READ_FAILED = /AI reading failed|did not read it|busy for too long|AI step failed/;
+
+async function readAndFile(slug: string, fileId: string, retry = false): Promise<AutoFileResult> {
   for (let attempt = 0; ; attempt++) {
-    const response = await fetch(`/c/${slug}/files/${fileId}/auto-file`, { method: "POST" });
+    const response = await fetch(`/c/${slug}/files/${fileId}/auto-file${retry ? "?retry=1" : ""}`, { method: "POST" });
     if (!response.ok && response.status !== 400) return { error: `The AI step failed (${response.status}); the file waits in Review.` };
     const result = (await response.json()) as AutoFileResult;
     if (!("status" in result) || result.status !== "busy" || attempt >= BUSY_RETRIES) return result;
@@ -85,10 +87,10 @@ export function BulkUploader({ slug, maxMb, aiAvailable }: { slug: string; maxMb
     return () => window.removeEventListener("beforeunload", warn);
   }, [running]);
 
-  const start = async () => {
+  const start = async (retrying: Item[] = []) => {
     setRunning(true);
-    const queue = items.filter((i) => i.phase === "queued");
-    const forAi: Item[] = [];
+    const queue = retrying.length ? [] : items.filter((i) => i.phase === "queued");
+    const forAi: Item[] = [...retrying];
     let aiRunning = false;
 
     const aiLane = async () => {
@@ -96,8 +98,8 @@ export function BulkUploader({ slug, maxMb, aiAvailable }: { slug: string; maxMb
       aiRunning = true;
       while (forAi.length) {
         const item = forAi.shift()!;
-        update(item.id, { phase: "reading" });
-        const result = await readAndFile(slug, item.fileId!);
+        update(item.id, { phase: "reading", detail: undefined });
+        const result = await readAndFile(slug, item.fileId!, retrying.length > 0);
         if ("error" in result) update(item.id, { phase: "review", detail: result.error });
         else if (result.status === "busy") update(item.id, { phase: "review", detail: "The AI was busy for too long; check it in Review." });
         else if (result.outcome.action === "filed") {
@@ -137,6 +139,7 @@ export function BulkUploader({ slug, maxMb, aiAvailable }: { slug: string; maxMb
       while (cursor < queue.length) await uploadOne(queue[cursor++]!);
     };
     await Promise.all(Array.from({ length: UPLOAD_LANES }, worker));
+    void aiLane();
     // Wait for the AI lane to finish what the uploads handed over.
     while (aiRunning || forAi.length) await new Promise((resolve) => setTimeout(resolve, 500));
     setRunning(false);
@@ -146,6 +149,7 @@ export function BulkUploader({ slug, maxMb, aiAvailable }: { slug: string; maxMb
   const queued = count("queued");
   const finished = items.length > 0 && !running && items.every((i) => DONE.includes(i.phase));
   const newParties = [...new Set(items.flatMap((i) => (i.newParty ? [i.newParty] : [])))];
+  const failedReads = items.filter((i) => i.phase === "review" && i.fileId && READ_FAILED.test(i.detail ?? ""));
 
   const download = () => {
     const blob = new Blob([`﻿${csvOf(items)}`], { type: "text/csv;charset=utf-8" });
@@ -175,7 +179,7 @@ export function BulkUploader({ slug, maxMb, aiAvailable }: { slug: string; maxMb
           <Upload />
           Choose files
         </Button>
-        <Button onClick={start} disabled={running || queued === 0 || !aiAvailable}>
+        <Button onClick={() => void start()} disabled={running || queued === 0 || !aiAvailable}>
           {running ? <Loader2 className="animate-spin" /> : <Sparkles />}
           {running ? "Working…" : queued ? `Upload and file ${queued} ${queued === 1 ? "file" : "files"}` : "Upload and file"}
         </Button>
@@ -212,6 +216,12 @@ export function BulkUploader({ slug, maxMb, aiAvailable }: { slug: string; maxMb
                 <span dir="auto" className="text-muted-foreground">
                   New customers or suppliers: {newParties.join(", ")}
                 </span>
+              )}
+              {failedReads.length > 0 && (
+                <Button variant="outline" size="sm" onClick={() => void start(failedReads)}>
+                  <Sparkles />
+                  Try the AI again on {failedReads.length} {failedReads.length === 1 ? "file" : "files"}
+                </Button>
               )}
               {count("review") > 0 && (
                 <Link href={`/c/${slug}/review`} className="underline">
