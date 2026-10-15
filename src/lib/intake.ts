@@ -56,17 +56,17 @@ function aiConfigured(): boolean {
 }
 
 /** The company's own folders the user may file into, as the model sees them. Year folders are not chosen, they are built. */
-function folderChoices(ctx: FileContext) {
+export function folderChoices(ctx: FileContext) {
   return ctx.folders
     .filter((f) => f.kind === "regular" && f.isActive && ctx.writable.has(f.id))
     .map((f) => ({ id: f.id, path: ctx.paths.get(f.id) ?? f.name, description: f.description }));
 }
 
-const partyChoices = (parties: PartyRow[]) => parties.map((p) => ({ id: p.id, side: p.side, name: p.name, aliases: p.aliases }));
-const materialChoices = (materials: MaterialRow[]) => materials.map((m) => ({ id: m.id, partyId: m.partyId, name: m.name, aliases: m.aliases }));
+export const partyChoices = (parties: PartyRow[]) => parties.map((p) => ({ id: p.id, side: p.side, name: p.name, aliases: p.aliases }));
+export const materialChoices = (materials: MaterialRow[]) => materials.map((m) => ({ id: m.id, partyId: m.partyId, name: m.name, aliases: m.aliases }));
 
 /** How a filing answer is kept on the file until the uploader confirms it (one column for both trees). */
-function storedFiling(filing: Filing | null) {
+export function storedFiling(filing: Filing | null) {
   if (!filing) return { suggestedFolderId: null, suggestedTrading: Prisma.DbNull, filingConfidence: null, filingReason: null };
   const trading: StoredTrading | StoredTechnical | null =
     filing.placement === "technical" && (TECH_KIND_IDS as readonly string[]).includes(filing.docKind ?? "")

@@ -20,6 +20,10 @@ Built in phases (see `prompt-file-manager.md`). **In place:** Microsoft sign-in,
 
 Admins have a **Bulk upload** tab: choose a folder (subfolders included) or a set of files, press Upload and file, and keep the tab open. Each file is uploaded, read by the AI and filed at once when the AI read it, named a place for it and was at least 50% sure; the summary stands as the AI wrote it and the log says so ("Filed by bulk upload"). Files the AI could not read, could not place, or was less sure about wait in Review as usual; duplicates are skipped. New customers and suppliers are created as needed and listed at the end. The AI reads one file at a time per person (10–20 seconds each), so a hundred files take about half an hour. The page is the report; it can be downloaded as CSV.
 
+
+## Re-filing
+
+Admins have a **Re-file** tab for files that are already in the system. Choose a group (Technical documents, Customer and supplier documents, Company folders, or the files left in Review), tick **Preview only** to see what would move, then run it again without the tick. The AI reads each stored file again with the current filing rules and moves it only when it is at least 60% sure it belongs elsewhere (50% for files in Review). Nothing is uploaded again; every move is in the Log, and the page can be downloaded as a CSV report. Each file costs one AI read, the same as a first upload. A customer's own specification for a material is filed under that customer's **Specifications** folder, not under Technical.
 ## Search
 
 Search looks only at what people confirmed: the name, title, summary, type, date, parties, reference numbers, amounts, products and tags. Nothing from a file's contents is indexed. Access is applied in the database query, so a file in a restricted folder never appears for someone without access, and the AI never sees it either.

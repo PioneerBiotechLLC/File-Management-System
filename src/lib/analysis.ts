@@ -25,8 +25,9 @@ export type FolderChoice = { id: string; path: string; description: string | nul
 /** How a document is filed; shared by the reading model and the folder-choice model. */
 export const FILING_RULES = `Filing rules ("we" and "our company" mean the company named with the lists):
 - placement "technical" for a document about a material rather than a deal: a certificate of analysis, a specification, a technical or product data sheet, a safety data sheet (MSDS/SDS), a stability or test report for one material. These are kept as Technical, then the manufacturer, then the material, then the kind of document.
-  - side: "supplier". partyId / partyName: the manufacturer of the material as printed (the maker, not the distributor we bought it from), matched to the list the same way as below.
-  - materialId: the id from the materials list when it is the same material from the same manufacturer, whatever the spelling, grade abbreviation or pack size. Otherwise null.
+  - Only the manufacturer's own documents. A specification written by one of our customers for a material they buy (their internal number such as "RMS 0116009", their company as issuer, "approved by" their staff) is not the manufacturer's: file it as placement "trading", side "customer", that customer, docKind "specifications".
+  - side: "supplier". partyId / partyName: the manufacturer of the material as printed (the maker, not the distributor we bought it from, and never a customer), matched to the list the same way as below.
+  - materialId: the id from the materials list only when it is the very same material from the same manufacturer, whatever the spelling, grade abbreviation or pack size. Different compounds are never the same material (methylparaben, propylparaben and sodium methylparaben; metronidazole, metronidazole benzoate and tinidazole), and different grades (Avicel PH 101, 102, 112) are separate. Otherwise null.
   - materialName: the material's name as printed, with its grade or type (for example "Microcrystalline Cellulose 102"), without batch numbers or quantities. Never a brand of ours.
   - docKind: coa (certificate of analysis), specifications (specifications, technical and product data sheets), sds (safety data sheets) or other_technical (stability, test and method reports about the material).
   - folderId: null.
@@ -34,9 +35,10 @@ export const FILING_RULES = `Filing rules ("we" and "our company" mean the compa
   - side: "customer" when that company buys from us (we are the seller); "supplier" when we buy from them.
   - partyId: the id from the customers and suppliers list when it is the same company on the same side, whatever the spelling: capitals, spaces or punctuation (ARABLAB, Arab Lab and ARAB-LAB are one company), with or without LLC, FZE, Ltd and the like, or a short form of the listed name. Only null when no listed company is this one.
   - partyName: that company's name as printed, without legal forms such as LLC, L.L.C., FZE, FZCO, Ltd or Co. Never our own company.
-  - docKind: quotations, purchase_orders, delivery_notes, invoices, contracts, price_lists, payments (payments, receipts, remittances, statements of account), shipping (bills of lading, airway bills, packing lists, certificates of origin, customs papers) or correspondence (anything else with them).
+  - A supplier's or manufacturer's company certificates and questionnaires (GMP, WHO-GMP, ISO, FSSC, kosher, halal, licences, evaluation questionnaires, NDAs) belong with that company: placement "trading", side "supplier", docKind "correspondence" (contracts for NDAs and agreements). Only our own licences go in "folder".
+  - docKind: quotations, purchase_orders, delivery_notes, invoices, contracts, price_lists, payments (payments, receipts, remittances, statements of account), shipping (bills of lading, airway bills, packing lists, certificates of origin, customs papers), specifications (a customer's own specifications) or correspondence (anything else with them).
   - materialId, materialName, folderId: null.
-- placement "folder" for everything else: our licences and GMP certificates, registration files, SOPs, employee records, our company documents, marketing material, bank statements. folderId is the id of the best folder from the company folders list; side, partyId, partyName, materialId, materialName and docKind are null.
+- placement "folder" for everything else: our own licences and GMP certificates, registration files, SOPs, employee records, our company documents, marketing material, bank statements. folderId is the id of the best folder from the company folders list; side, partyId, partyName, materialId, materialName and docKind are null.
 - confidence: 0 to 1. Above 0.9 when it clearly belongs there; 0.5 to 0.75 when two places are plausible; below 0.5 when unsure.
 - reason: one short English sentence a colleague would understand, for example "Invoice we issued to a customer".`;
 

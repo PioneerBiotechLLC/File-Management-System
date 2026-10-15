@@ -11,6 +11,7 @@ vi.mock("@/lib/storage", async (importOriginal) => {
   return {
     ...actual,
     presignUpload: async (key: string) => `https://bucket.test/put/${key}`,
+    getObject: async (key: string) => (stored.has(key) ? new Uint8Array([37, 80, 68, 70]) : null),
     head: async (key: string) => (stored.has(key) ? { sizeBytes: stored.get(key)!, contentType: null } : null),
     copy: async (from: string, to: string) => void stored.set(to, stored.get(from)!),
     remove: async (key: string) => void stored.delete(key),
@@ -23,7 +24,24 @@ vi.mock("@/lib/storage", async (importOriginal) => {
   };
 });
 
+let nextFiling: Record<string, unknown> = {};
+vi.mock("@/lib/analysis", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/analysis")>();
+  return {
+    ...actual,
+    analyzeFile: async () => ({
+      status: "analyzed",
+      model: "test",
+      readStatus: "full",
+      analysis: { readable: true, problem: null, docDate: null, filing: nextFiling },
+    }),
+  };
+});
+vi.mock("@/lib/extract", () => ({ extract: async () => ({ kind: "text", text: "x" }) }));
+vi.stubEnv("ANTHROPIC_API_KEY", "test-key");
+
 const { createCompany } = await import("./companies");
+const { refileOne, listRefileFiles } = await import("./refile");
 const { addMember } = await import("./users");
 const files = await import("./files");
 const { destinationOf, fileTo, filingYear, listMaterials, listParties, suggestionFor } = await import("./parties");
@@ -297,6 +315,35 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
     await expect(autoFileAfterRead(prisma, await ctxFor("sara"), company, unsure)).rejects.toThrow(/Only admins/);
   });
 
+  it("re-files a stored file by the current rules, previewing first and moving only when sure", async () => {
+    const company = { name: "API Pharma", domain: "api-pharma.net", timezone: "Asia/Dubai" };
+    const fileId = await waiting("sara", "RMS 0116009 Propylene Glycol.pdf");
+    await fileTo(prisma, await ctxFor("sara"), {
+      fileId,
+      destination: { kind: "technical", partyId: null, partyName: "Julphar", materialId: null, materialName: "Propylene Glycol", docKind: "specifications" },
+    });
+    const admin = await ctxFor("admin");
+    const wrong = "Technical / Julphar / Propylene Glycol / Specifications & Data Sheets";
+    expect((await listRefileFiles(prisma, await ctxFor("admin"), "technical")).find((f) => f.id === fileId)).toMatchObject({ path: wrong });
+
+    nextFiling = { placement: "trading", side: "customer", partyId: null, partyName: "Julphar", materialId: null, materialName: null, docKind: "specifications", folderId: null, confidence: 0.9, reason: "A customer's own specification" };
+    const year = filingYear(null, new Date(), "Asia/Dubai");
+    expect(await refileOne(prisma, admin, company, fileId, { apply: false })).toMatchObject({ status: "preview", from: wrong, to: `${year} / Customers / Julphar / Specifications` });
+    expect((await files.getFile(prisma, admin, fileId))?.folderId).not.toBeNull();
+    expect(await listRefileFiles(prisma, await ctxFor("admin"), "technical").then((l) => l.some((f) => f.id === fileId))).toBe(true);
+
+    nextFiling = { ...nextFiling, confidence: 0.4 };
+    expect(await refileOne(prisma, admin, company, fileId, { apply: true })).toMatchObject({ status: "kept" });
+
+    nextFiling = { ...nextFiling, confidence: 0.9 };
+    expect(await refileOne(prisma, admin, company, fileId, { apply: true })).toMatchObject({ status: "moved", to: expect.stringContaining("Customers / Julphar / Specifications") });
+    const moved = await prisma.storedFile.findUniqueOrThrow({ where: { id: fileId } });
+    expect(moved.materialId).toBeNull();
+    expect(moved.partyId).not.toBeNull();
+    expect(await refileOne(prisma, await ctxFor("admin"), company, fileId, { apply: true })).toMatchObject({ status: "unchanged" });
+    await expect(refileOne(prisma, await ctxFor("sara"), company, fileId, { apply: true })).rejects.toThrow(/Only admins/);
+  });
+
   it("resets a company to before its first upload, keeping its own folders, people and log", async () => {
     const regular = await prisma.folder.count({ where: { orgId, kind: "regular" } });
     const logBefore = await prisma.auditLog.count({ where: { orgId } });
@@ -306,7 +353,7 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
     const r = await resetFiles(prisma, orgId, "cli:test");
 
     expect(r.files).toBeGreaterThan(0);
-    expect(r.parties).toBe(6);
+    expect(r.parties).toBe(8);
     expect(await prisma.storedFile.count({ where: { orgId } })).toBe(0);
     expect(await prisma.fileVersion.count({ where: { file: { orgId } } })).toBe(0);
     expect(await prisma.party.count({ where: { orgId } })).toBe(0);

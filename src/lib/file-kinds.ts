@@ -26,6 +26,7 @@ export const DOC_KINDS = [
   { id: "price_lists", name: "Price Lists", docTypes: ["price_list"] },
   { id: "payments", name: "Payments & Receipts", docTypes: ["payment"] },
   { id: "shipping", name: "Shipping & Customs", docTypes: ["shipping_document"] },
+  { id: "specifications", name: "Specifications", docTypes: [] },
   { id: "correspondence", name: "Correspondence", docTypes: ["letter", "certificate", "report", "other"] },
 ] as const satisfies readonly { id: string; name: string; docTypes: readonly DocType[] }[];
 
