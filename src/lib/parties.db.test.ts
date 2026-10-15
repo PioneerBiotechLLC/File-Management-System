@@ -30,6 +30,7 @@ const { destinationOf, fileTo, filingYear, listParties, suggestionFor } = await 
 const { browseTrading } = await import("./browse");
 const { restructureFolders } = await import("./restructure");
 const { resetFiles } = await import("./reset");
+const { autoFileAfterRead } = await import("./bulk");
 const { grantAccess } = await import("./folder-admin");
 const { UserError } = await import("./errors");
 
@@ -201,6 +202,31 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
     expect(again).toMatchObject({ created: 0, bankMoved: false, retired: [], filesInRetired: 1 });
   });
 
+  it("bulk upload: files a confident AI read at once, and leaves unsure or unread files for Review", async () => {
+    const admin = await ctxFor("admin");
+    const company = { timezone: "Asia/Dubai" };
+    // What readUpload leaves behind: a draft summary and a filing proposal, nothing confirmed.
+    const read = async (name: string, data: object) => {
+      const fileId = await waiting("sara", name);
+      await prisma.storedFile.update({ where: { id: fileId }, data: { summaryConfirmedAt: null, readStatus: "full", title: name, summary: `About ${name}`, ...data } });
+      return fileId;
+    };
+    const sure = await read("DN-9.pdf", { docDate: new Date("2025-03-01T00:00:00Z"), suggestedTrading: { side: "supplier", partyId: null, partyName: "Maple Biotech", docKind: "delivery_notes" }, filingConfidence: 0.92, filingReason: "Delivery note from a supplier" });
+    const unsure = await read("odd-note.pdf", { suggestedTrading: { side: "customer", partyId: null, partyName: "Somebody", docKind: "correspondence" }, filingConfidence: 0.3, filingReason: "Unclear" });
+    const unread = await waiting("sara", "scan.pdf");
+    await prisma.storedFile.update({ where: { id: unread }, data: { summaryConfirmedAt: null, readStatus: "not_read", aiError: "handwritten" } });
+
+    expect(await autoFileAfterRead(prisma, admin, company, sure)).toMatchObject({ action: "filed", path: "2025 / Suppliers / Maple Biotech / Delivery Notes", newParty: "Maple Biotech" });
+    expect(await prisma.storedFile.findUniqueOrThrow({ where: { id: sure } })).toMatchObject({ status: "ready", summaryConfirmedBy: "admin@api-pharma.net", filedBy: "admin@api-pharma.net" });
+    expect(await prisma.auditLog.findFirst({ where: { targetId: sure, action: "file.summary" } })).toMatchObject({ after: { auto: true } });
+
+    expect(await autoFileAfterRead(prisma, admin, company, unsure)).toMatchObject({ action: "review", reason: expect.stringContaining("30% sure") });
+    expect(await autoFileAfterRead(prisma, admin, company, unread)).toMatchObject({ action: "review", reason: expect.stringContaining("handwritten") });
+    expect(await prisma.storedFile.count({ where: { id: { in: [unsure, unread] }, status: "needs_review", summaryConfirmedAt: null } })).toBe(2);
+    expect(await prisma.party.count({ where: { orgId, name: "Somebody" } })).toBe(0);
+    await expect(autoFileAfterRead(prisma, await ctxFor("sara"), company, unsure)).rejects.toThrow(/Only admins/);
+  });
+
   it("resets a company to before its first upload, keeping its own folders, people and log", async () => {
     const regular = await prisma.folder.count({ where: { orgId, kind: "regular" } });
     const logBefore = await prisma.auditLog.count({ where: { orgId } });
@@ -210,7 +236,7 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
     const r = await resetFiles(prisma, orgId, "cli:test");
 
     expect(r.files).toBeGreaterThan(0);
-    expect(r.parties).toBe(2);
+    expect(r.parties).toBe(3);
     expect(await prisma.storedFile.count({ where: { orgId } })).toBe(0);
     expect(await prisma.fileVersion.count({ where: { file: { orgId } } })).toBe(0);
     expect(await prisma.party.count({ where: { orgId } })).toBe(0);

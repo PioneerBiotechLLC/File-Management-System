@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { AiPurpose } from "@/generated/prisma/enums";
-import { checkBudget, type LimitReason } from "@/lib/ai-limits";
+import { checkBudget, type LimitReason, countedUsage, exemptUserIds } from "@/lib/ai-limits";
 import { FALLBACK_PRICE_MODEL, PRICES } from "@/lib/ai-prices";
 import type { Db } from "@/lib/db";
 import { aiEnv } from "@/lib/env";
@@ -119,8 +119,12 @@ async function reserveCall(prisma: Db, ctx: AiCallContext, model: string, cap: n
   const since = startOfDay(now, ctx.timezone);
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`ai-cap:${ctx.orgId}`}))`;
-    const used = await tx.aiUsage.count({ where: { orgId: ctx.orgId, createdAt: { gte: since } } });
-    if (used >= cap) throw new AiLimitError("company_calls", `The company has reached its daily limit of ${cap} AI calls.`);
+    // Admins and owners have no cap at all, only one call at a time; nor do they count for others.
+    const exempt = await exemptUserIds(tx, ctx.orgId);
+    if (!(ctx.userId && exempt.includes(ctx.userId))) {
+      const used = await tx.aiUsage.count({ where: { ...countedUsage(ctx.orgId, exempt), createdAt: { gte: since } } });
+      if (used >= cap) throw new AiLimitError("company_calls", `The company has reached its daily limit of ${cap} AI calls.`);
+    }
     if (ctx.userId) {
       const inFlight = await tx.aiUsage.count({
         where: { orgId: ctx.orgId, userId: ctx.userId, finishedAt: null, createdAt: { gte: new Date(now.getTime() - IN_FLIGHT_MS) } },

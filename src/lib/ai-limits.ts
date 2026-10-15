@@ -1,3 +1,4 @@
+import type { Prisma } from "@/generated/prisma/client";
 import type { Db, DbTx } from "@/lib/db";
 import { limitsEnv } from "@/lib/env";
 import { UserError } from "@/lib/errors";
@@ -41,9 +42,27 @@ export function memberDefaults(): Limits {
   return { dailyUsd: env.AI_USER_DAILY_USD, monthlyUsd: env.AI_USER_MONTHLY_USD };
 }
 
-async function spent(prisma: DbTx, where: { orgId: string; userId?: string }, since: Date): Promise<number> {
+async function spent(prisma: DbTx, where: Prisma.AiUsageWhereInput, since: Date): Promise<number> {
   const sum = await prisma.aiUsage.aggregate({ _sum: { costUsd: true }, where: { ...where, createdAt: { gte: since } } });
   return sum._sum.costUsd ?? 0;
+}
+
+/**
+ * Admins and owners have no personal cap, and what they spend does not count against the
+ * company's cap (a bulk upload by an admin must not switch the AI off for everyone). It is still
+ * recorded and shown in Usage.
+ */
+export async function exemptUserIds(prisma: DbTx, orgId: string): Promise<string[]> {
+  const [admins, owners] = await Promise.all([
+    prisma.membership.findMany({ where: { orgId, role: "admin" }, select: { userId: true } }),
+    prisma.appUser.findMany({ where: { isOwner: true }, select: { id: true } }),
+  ]);
+  return [...new Set([...admins.map((m) => m.userId), ...owners.map((o) => o.id)])];
+}
+
+/** Usage that counts against the company: calls by non-exempt people, and calls with no person (jobs). */
+export function countedUsage(orgId: string, exempt: string[]): Prisma.AiUsageWhereInput {
+  return { orgId, OR: [{ userId: null }, { userId: { notIn: exempt } }] };
 }
 
 export type LimitReason = "user_day" | "user_month" | "company_day" | "company_month" | "company_calls" | "user_busy";
@@ -60,6 +79,8 @@ export async function checkBudget(
   const month = startOfMonth(now, scope.timezone);
   const org = await prisma.organization.findUnique({ where: { id: scope.orgId }, select: { aiDailyUsd: true, aiMonthlyUsd: true } });
   const company = resolve(org, companyDefaults());
+  const exempt = await exemptUserIds(prisma, scope.orgId);
+  if (scope.userId && exempt.includes(scope.userId)) return { ok: true };
 
   if (scope.userId) {
     const membership = await prisma.membership.findUnique({
@@ -75,7 +96,7 @@ export async function checkBudget(
       return { ok: false, reason: "user_month", message: `You have reached your monthly AI limit (${money(mine.monthlyUsd)}).` };
     }
   }
-  const where = { orgId: scope.orgId };
+  const where = countedUsage(scope.orgId, exempt);
   if ((await spent(prisma, where, day)) >= company.dailyUsd) {
     return { ok: false, reason: "company_day", message: `The company has reached its daily AI limit (${money(company.dailyUsd)}).` };
   }
@@ -93,6 +114,8 @@ type Counts = { reads: number; searches: number; usd: number };
 
 export type UsageRow = {
   userId: string;
+  /** Admins and owners: no personal cap, and not counted against the company's. */
+  exempt: boolean;
   email: string;
   name: string | null;
   role: "admin" | "editor" | "viewer";
@@ -106,7 +129,8 @@ export type UsageRow = {
 };
 
 export type UsageReport = {
-  company: { overrides: Overrides; limits: Limits; today: Counts; month: Counts };
+  /** `today` and `month` are everything recorded; `counted` leaves out admins and owners, and is what the caps apply to. */
+  company: { overrides: Overrides; limits: Limits; today: Counts; month: Counts; counted: { today: Counts; month: Counts } };
   defaults: { company: Limits; member: Limits };
   /** The most a cap can be set to here. */
   ceilings: Limits;
@@ -142,24 +166,33 @@ const total = (rows: Iterable<Counts>): Counts => {
 };
 
 export async function usageReport(prisma: Db, org: { id: string; timezone: string }, now = new Date()): Promise<UsageReport> {
-  const [orgRow, members, memberships, today, month] = await Promise.all([
+  const [orgRow, members, memberships, today, month, exempt] = await Promise.all([
     prisma.organization.findUniqueOrThrow({ where: { id: org.id }, select: { aiDailyUsd: true, aiMonthlyUsd: true } }),
     listMembers(prisma, org.id),
     prisma.membership.findMany({ where: { orgId: org.id }, select: { userId: true, aiDailyUsd: true, aiMonthlyUsd: true } }),
     countsByUser(prisma, org.id, startOfDay(now, org.timezone)),
     countsByUser(prisma, org.id, startOfMonth(now, org.timezone)),
+    exemptUserIds(prisma, org.id),
   ]);
+  const counted = (m: Map<string | null, Counts>) => total([...m].filter(([userId]) => !userId || !exempt.includes(userId)).map(([, c]) => c));
   const overridesByUser = new Map(memberships.map((m) => [m.userId, { aiDailyUsd: m.aiDailyUsd, aiMonthlyUsd: m.aiMonthlyUsd }]));
   const none = { reads: 0, searches: 0, usd: 0 };
   const defaults = { company: companyDefaults(), member: memberDefaults() };
   return {
-    company: { overrides: orgRow, limits: resolve(orgRow, defaults.company), today: total(today.values()), month: total(month.values()) },
+    company: {
+      overrides: orgRow,
+      limits: resolve(orgRow, defaults.company),
+      today: total(today.values()),
+      month: total(month.values()),
+      counted: { today: counted(today), month: counted(month) },
+    },
     defaults,
     ceilings: ceilings(),
     people: members.map((m) => {
       const overrides = overridesByUser.get(m.userId) ?? null;
       return {
         userId: m.userId,
+        exempt: exempt.includes(m.userId),
         email: m.email,
         name: m.name,
         role: m.role,

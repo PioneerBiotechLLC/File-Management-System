@@ -77,11 +77,21 @@ export function partyKey(name: string): string {
 
 export type PartyChoice = { id: string; side: PartySide; name: string; aliases?: string[] };
 
-/** The existing party this name means, by its folded name or a spelling seen before. */
+/** The key with its spaces removed: "arab lab" and "arablab" are one company. */
+const compact = (key: string) => key.replace(/ /g, "");
+
+/**
+ * The existing party this name means: by its folded name or a spelling seen before, else by the
+ * same letters with spaces ignored, so ARABLAB, Arab Lab and ARAB LAB L.L.C. are one customer.
+ */
 export function matchParty<P extends { side: PartySide; key?: string; name: string; aliases?: string[] }>(parties: P[], side: PartySide, name: string): P | null {
   const key = partyKey(name);
   if (!key) return null;
-  return parties.find((p) => p.side === side && ((p.key ?? partyKey(p.name)) === key || (p.aliases ?? []).includes(key))) ?? null;
+  const onSide = parties.filter((p) => p.side === side);
+  const exact = onSide.find((p) => (p.key ?? partyKey(p.name)) === key || (p.aliases ?? []).includes(key));
+  if (exact) return exact;
+  const flat = compact(key);
+  return onSide.find((p) => compact(p.key ?? partyKey(p.name)) === flat || (p.aliases ?? []).some((a) => compact(a) === flat)) ?? null;
 }
 
 export type Destination =

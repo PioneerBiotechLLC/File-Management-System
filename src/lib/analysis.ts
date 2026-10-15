@@ -26,7 +26,7 @@ export type FolderChoice = { id: string; path: string; description: string | nul
 export const FILING_RULES = `Filing rules ("we" and "our company" mean the company named with the lists):
 - placement "trading" for a document exchanged between us and one customer or supplier: quotations, purchase orders, order confirmations, delivery notes, invoices, credit notes, certificates of analysis for goods we bought or sold, contracts with them, their price lists, payments and receipts, shipping and customs papers, and letters or emails with them. These are kept per year, then customers or suppliers, then the company, then the kind of document.
   - side: "customer" when that company buys from us (we are the seller); "supplier" when we buy from them.
-  - partyId: the id from the customers and suppliers list when it is the same company on the same side, even if spelled differently or with or without LLC, FZE, Ltd and the like. Otherwise null.
+  - partyId: the id from the customers and suppliers list when it is the same company on the same side, whatever the spelling: capitals, spaces or punctuation (ARABLAB, Arab Lab and ARAB-LAB are one company), with or without LLC, FZE, Ltd and the like, or a short form of the listed name. Only null when no listed company is this one.
   - partyName: that company's name as printed, without legal forms such as LLC, L.L.C., FZE, FZCO, Ltd or Co. Never our own company.
   - docKind: quotations, purchase_orders, delivery_notes, invoices, coa (certificate of analysis), contracts, price_lists, payments (payments, receipts, remittances, statements of account), shipping (bills of lading, airway bills, packing lists, certificates of origin, customs papers) or correspondence (anything else with them).
   - folderId: null.

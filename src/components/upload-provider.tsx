@@ -48,12 +48,12 @@ export function useUploads(): Uploads {
 const MAX_PARALLEL = 2;
 const ACTIVE: Phase[] = ["hashing", "uploading", "finishing", "reading"];
 
-async function sha256Hex(file: File): Promise<string> {
+export async function sha256Hex(file: File): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-function putToBucket(url: string, file: File, contentType: string, onProgress: (fraction: number) => void): Promise<void> {
+export function putToBucket(url: string, file: File, contentType: string, onProgress: (fraction: number) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", url);
@@ -364,7 +364,14 @@ function UploadRow({
           </span>
         </div>
       )}
-      {item.phase === "queued" && <span className="text-muted-foreground text-xs">Waiting…</span>}
+      {item.phase === "queued" && (
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-muted-foreground">Waiting…</span>
+          <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={onDismiss}>
+            Cancel
+          </Button>
+        </div>
+      )}
       {item.phase === "reading" && <span className="text-muted-foreground text-xs">{item.message} This usually takes 5–30 seconds.</span>}
 
       {(item.phase === "filed" || item.phase === "review" || item.phase === "version") && (

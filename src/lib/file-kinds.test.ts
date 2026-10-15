@@ -29,6 +29,12 @@ describe("matchParty", () => {
     expect(matchParty(parties, "customer", "GPharm")?.id).toBe("p1");
     expect(matchParty(parties, "customer", "Noor")).toBeNull();
   });
+
+  it("ignores spaces, case and punctuation: ARABLAB, Arab Lab and ARAB-LAB L.L.C. are one customer", () => {
+    const arab = [{ id: "a1", side: "customer" as const, name: "Arab Lab", key: "arab lab", aliases: [] }];
+    for (const spelling of ["ARABLAB", "ARAB LAB", "Arab-Lab L.L.C.", "arab  lab llc", "ArabLab"]) expect(matchParty(arab, "customer", spelling)?.id).toBe("a1");
+    expect(matchParty(arab, "customer", "Arab Laboratories")).toBeNull();
+  });
 });
 
 describe("document kinds", () => {

@@ -1,10 +1,10 @@
 "use client";
 
-import { AlertTriangle, Loader2, Sparkles } from "lucide-react";
+import { AlertTriangle, Loader2, Sparkles, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition } from "react";
-import { confirmSummaryAction, fileToAction, retryReadAction } from "@/app/c/[slug]/actions";
+import { confirmSummaryAction, deleteFileAction, fileToAction, retryReadAction } from "@/app/c/[slug]/actions";
 import { DestinationPicker, draftFrom, resolveDraft } from "@/components/destination-picker";
 import { FileIcon } from "@/components/file-icon";
 import { Button } from "@/components/ui/button";
@@ -42,7 +42,19 @@ export function ReviewCard({ slug, file, parties, folders, focused }: { slug: st
   const router = useRouter();
   const [step, setStep] = useState(file.step);
   const [suggestion, setSuggestion] = useState(file.suggestion);
+  const [removing, startRemove] = useTransition();
+  const [removeError, setRemoveError] = useState<string | null>(null);
   const card = useRef<HTMLElement>(null);
+
+  // Uploaded by mistake: it goes to Deleted (restorable for 30 days) without ever being filed.
+  const remove = () => {
+    if (!window.confirm(`Remove "${file.name}"? It will not be filed; you can restore it from Deleted within 30 days.`)) return;
+    startRemove(async () => {
+      const result = await deleteFileAction(slug, { fileId: file.id });
+      if (result.ok) router.refresh();
+      else setRemoveError(result.error);
+    });
+  };
 
   // The server's view wins when it changes (a read finishing, another tab confirming).
   useEffect(() => {
@@ -67,7 +79,15 @@ export function ReviewCard({ slug, file, parties, folders, focused }: { slug: st
           </p>
         </div>
         <span className="text-muted-foreground shrink-0 text-xs">{step === "folder" ? "Step 2 of 2" : "Step 1 of 2"}</span>
+        <Button type="button" variant="ghost" size="icon" className="text-muted-foreground hover:text-destructive -mt-1 -mr-2 size-8 shrink-0" onClick={remove} disabled={removing} aria-label="Remove this file">
+          {removing ? <Loader2 className="animate-spin" /> : <Trash2 />}
+        </Button>
       </div>
+      {removeError && (
+        <p role="alert" className="text-destructive text-sm">
+          {removeError}
+        </p>
+      )}
 
       {step === "reading" && (
         <p className="text-muted-foreground flex items-center gap-2 text-sm">

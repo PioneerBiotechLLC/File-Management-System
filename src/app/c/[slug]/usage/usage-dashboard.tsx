@@ -84,20 +84,29 @@ export function UsageDashboard({ slug, report }: { slug: string; report: UsageRe
       <Card>
         <CardHeader>
           <CardTitle>Company</CardTitle>
-          <CardDescription>Everything the AI has cost the company, across all people. Leave a limit empty to use the default.</CardDescription>
+          <CardDescription>
+            Everything the AI has cost the company. The limits apply to editors and viewers; what admins and owners spend is recorded but never counted
+            against them. Leave a limit empty to use the default.
+          </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
           <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
             <div className="flex justify-between gap-4">
               <dt className="text-muted-foreground">Today</dt>
-              <dd>
-                <Spend spent={company.today.usd} cap={company.limits.dailyUsd} /> · {filesRead(company.today.reads)}
+              <dd className="text-right">
+                <Spend spent={company.counted.today.usd} cap={company.limits.dailyUsd} /> · {filesRead(company.today.reads)}
+                {company.today.usd > company.counted.today.usd && (
+                  <span className="text-muted-foreground block text-xs">{usd(company.today.usd)} in all, with admins</span>
+                )}
               </dd>
             </div>
             <div className="flex justify-between gap-4">
               <dt className="text-muted-foreground">This month</dt>
-              <dd>
-                <Spend spent={company.month.usd} cap={company.limits.monthlyUsd} /> · {filesRead(company.month.reads)}
+              <dd className="text-right">
+                <Spend spent={company.counted.month.usd} cap={company.limits.monthlyUsd} /> · {filesRead(company.month.reads)}
+                {company.month.usd > company.counted.month.usd && (
+                  <span className="text-muted-foreground block text-xs">{usd(company.month.usd)} in all, with admins</span>
+                )}
               </dd>
             </div>
           </dl>
@@ -172,6 +181,7 @@ function PersonRow({ slug, person, defaults }: { slug: string; person: UsageRow;
         {person.name && <div className="text-muted-foreground text-xs">{person.email}</div>}
         <div className="mt-1 flex gap-1">
           {person.isOwner && <Badge variant="secondary">Owner</Badge>}
+          {person.exempt && <Badge variant="outline">No limit</Badge>}
           {!person.isActive && <Badge variant="outline">Deactivated</Badge>}
           {custom && <Badge variant="outline">Own limits</Badge>}
         </div>
@@ -182,14 +192,12 @@ function PersonRow({ slug, person, defaults }: { slug: string; person: UsageRow;
       <TableCell className="text-right">
         {person.today.searches} <span className="text-muted-foreground">/ {person.month.searches}</span>
       </TableCell>
-      <TableCell>
-        <Spend spent={person.today.usd} cap={person.limits.dailyUsd} />
-      </TableCell>
-      <TableCell>
-        <Spend spent={person.month.usd} cap={person.limits.monthlyUsd} />
-      </TableCell>
+      <TableCell>{person.exempt ? usd(person.today.usd) : <Spend spent={person.today.usd} cap={person.limits.dailyUsd} />}</TableCell>
+      <TableCell>{person.exempt ? usd(person.month.usd) : <Spend spent={person.month.usd} cap={person.limits.monthlyUsd} />}</TableCell>
       <TableCell className="whitespace-normal">
-        {person.overrides === null ? (
+        {person.exempt ? (
+          <span className="text-muted-foreground text-xs">Not counted</span>
+        ) : person.overrides === null ? (
           <span className="text-muted-foreground text-xs">Default limits</span>
         ) : editing ? (
           <LimitsForm

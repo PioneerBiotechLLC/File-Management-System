@@ -190,6 +190,7 @@ export function describeEntry(entry: Entry, lookups: Lookups): LogPart[] {
     }
     case "file.summary":
       if (after.source !== "ai") return ["Wrote the summary of ", file];
+      if (after.auto) return ["Filed by bulk upload with the AI summary of ", file];
       return [after.edited ? "Edited and confirmed the AI summary of " : "Confirmed the AI summary of ", file];
     case "ai.limits": {
       const who = entry.targetType === "organization" ? "the company's" : `${person}'s`;

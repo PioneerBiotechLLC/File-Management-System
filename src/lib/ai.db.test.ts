@@ -175,6 +175,28 @@ describe.skipIf(!TEST_DATABASE_URL)("callClaude and the daily cap (database)", (
       await expect(callClaude(prisma, { ...ctx(), userId: omar }, params, fakeClient(create))).resolves.toBeDefined();
     });
 
+    it("gives admins no cap and leaves their spend out of the company's, while still recording it", async () => {
+      const admin = (await prisma.appUser.create({ data: { email: "boss@cap.example" } })).id;
+      await prisma.membership.create({ data: { userId: admin, orgId, role: "admin" } });
+      vi.stubEnv("AI_USER_DAILY_USD", "0.01");
+      vi.stubEnv("AI_DAILY_USD", "0.05");
+      await spend(admin, 5);
+      const create = vi.fn().mockResolvedValue(reply);
+      // Far over both caps by the admin alone, yet the admin and an editor both continue.
+      await expect(callClaude(prisma, { ...ctx(), userId: admin }, params, fakeClient(create))).resolves.toBeDefined();
+      expect(await prisma.aiUsage.count({ where: { userId: admin } })).toBe(2);
+      const fresh = (await prisma.appUser.create({ data: { email: "new@cap.example" } })).id;
+      await prisma.membership.create({ data: { userId: fresh, orgId, role: "viewer" } });
+      await expect(callClaude(prisma, { ...ctx(), userId: fresh }, params, fakeClient(create))).resolves.toBeDefined();
+      // Editors' spend still counts for the company.
+      await spend(fresh, 0.06);
+      const stopped = await callClaude(prisma, { ...ctx(), userId: sara }, params, fakeClient(create)).catch((e: unknown) => e);
+      expect(stopped).toMatchObject({ reason: "company_day" });
+      await prisma.aiUsage.deleteMany({ where: { userId: { in: [admin, fresh] } } });
+      vi.stubEnv("AI_USER_DAILY_USD", "2");
+      vi.stubEnv("AI_DAILY_USD", "10");
+    });
+
     it("stops the whole company at its monthly cap, ignoring last month", async () => {
       vi.stubEnv("AI_DAILY_USD", "100");
       vi.stubEnv("AI_MONTHLY_USD", "0.05");
