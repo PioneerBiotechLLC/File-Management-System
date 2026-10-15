@@ -110,6 +110,13 @@ export function suggestionFor(
   if (technical.success) {
     const { partyId, partyName, materialId, materialName, docKind: kind } = technical.data;
     const printed = partyName ? cleanPartyName(partyName) : "";
+    // A specification "by" one of our customers is their own specification for a material they buy,
+    // not a manufacturer's: it belongs in that customer's folder, whatever the AI chose.
+    const customer = kind === "specifications" && printed ? matchParty(parties, "customer", printed) : null;
+    if (customer) {
+      const destination: Destination = { kind: "trading", year, side: "customer", partyId: customer.id, partyName: customer.name, docKind: "specifications" };
+      return { ...base, destination, path: tradingPath(destination), newParty: false, newMaterial: false, seenAs: null };
+    }
     const party = parties.find((p) => p.id === partyId && p.side === "supplier") ?? (printed ? matchParty(parties, "supplier", printed) : null);
     if (!party && !printed) return null;
     const printedMaterial = materialName ? cleanPartyName(materialName) : "";
