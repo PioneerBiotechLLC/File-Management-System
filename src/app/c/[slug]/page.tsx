@@ -17,7 +17,7 @@ import { can } from "@/lib/permissions";
 import { companyContext } from "@/lib/session";
 import { AskBox } from "./search/ask-box";
 
-type SearchParams = { folder?: string; year?: string; side?: string; party?: string; kind?: string; sort?: string; dir?: string; page?: string };
+type SearchParams = { folder?: string; tree?: string; year?: string; side?: string; party?: string; material?: string; kind?: string; sort?: string; dir?: string; page?: string };
 
 const SORTS = ["name", "createdAt", "sizeBytes"] as const;
 
@@ -42,7 +42,9 @@ export default async function CompanyHome({ params, searchParams }: { params: Pr
   const folder = folderId ? ctx.folders.find((f) => f.id === folderId) : undefined;
 
   // Browsing by year, customer or supplier, company and kind: on the home view, not inside a folder.
-  const browse = folder ? null : await browseTrading(prisma, ctx, { year: query.year, side: query.side, partyId: query.party, docKind: query.kind });
+  const browse = folder
+    ? null
+    : await browseTrading(prisma, ctx, { tree: query.tree, year: query.year, side: query.side, partyId: query.party, materialId: query.material, docKind: query.kind });
   const browsing = Boolean(browse?.active);
 
   const sort = (SORTS as readonly string[]).includes(query.sort ?? "") ? (query.sort as NonNullable<ListFilesOptions["sort"]>) : undefined;
@@ -117,7 +119,7 @@ export default async function CompanyHome({ params, searchParams }: { params: Pr
           {can(role, "file.upload") && (!folder || ctx.writable.has(folder.id)) && <UploadButton />}
         </div>
 
-        {browse && (browse.years.length > 0 || browse.active) && <TradingFilters slug={slug} browse={browse} />}
+        {browse && (browse.trees.trading || browse.trees.technical || browse.active) && <TradingFilters slug={slug} browse={browse} />}
 
         {children.length > 0 && (
           <div className="flex flex-wrap gap-2">

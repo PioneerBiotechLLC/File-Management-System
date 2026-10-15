@@ -135,6 +135,33 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
     expect(invoices.total).toBe(2);
     const listed = await files.listFiles(prisma, vic, { folderIds: invoices.folderIds });
     expect(listed.items.map((f) => f.name).sort()).toEqual(["INV-1001.pdf", "INV-1002.pdf"]);
+    expect(all.trees).toEqual({ trading: true, technical: false });
+  });
+
+  it("browses technical documents by manufacturer, material and kind", async () => {
+    const admin = await ctxFor("admin");
+    const coa = await waiting("sara", "CC-MCC-COA.pdf");
+    await fileTo(prisma, admin, { fileId: coa, destination: { kind: "technical", partyId: null, partyName: "Colorcon", materialId: null, materialName: "MCC 102", docKind: "coa" } });
+    const tds = await waiting("sara", "CC-MCC-TDS.pdf");
+    await fileTo(prisma, admin, { fileId: tds, destination: { kind: "technical", partyId: null, partyName: "Colorcon", materialId: null, materialName: "MCC 102", docKind: "specifications" } });
+    const other = await waiting("sara", "RO-LAC-COA.pdf");
+    await fileTo(prisma, admin, { fileId: other, destination: { kind: "technical", partyId: null, partyName: "Roquette", materialId: null, materialName: "Lactose 200M", docKind: "coa" } });
+
+    const vic = await ctxFor("vic");
+    const all = await browseTrading(prisma, vic, { tree: "technical" });
+    expect(all.trees.technical).toBe(true);
+    expect(all.makers.map((m) => [m.label, m.count])).toEqual([["Colorcon", 2], ["Roquette", 1]]);
+    expect(all.materials.map((m) => [m.label, m.count])).toEqual([["Lactose 200M", 1], ["MCC 102", 2]]);
+    expect(all.techKinds.map((k) => [k.value, k.count])).toEqual([["coa", 2], ["specifications", 1]]);
+
+    const signet = all.makers.find((m) => m.label === "Colorcon")!.value;
+    const narrowed = await browseTrading(prisma, vic, { tree: "technical", partyId: signet, docKind: "coa" });
+    expect(narrowed.materials.map((m) => m.label)).toEqual(["MCC 102"]);
+    expect(narrowed.techKinds.map((k) => k.value)).toEqual(["coa", "specifications"]);
+    expect(narrowed.total).toBe(1);
+    expect((await files.listFiles(prisma, vic, { folderIds: narrowed.folderIds })).items.map((f) => f.name)).toEqual(["CC-MCC-COA.pdf"]);
+    // A commercial kind means nothing in the technical tree, and the other way round.
+    expect((await browseTrading(prisma, vic, { tree: "technical", docKind: "invoices" })).filter.docKind).toBeNull();
   });
 
   it("checks permission before creating anything", async () => {
@@ -212,10 +239,10 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
     expect((await files.getFile(prisma, await ctxFor("admin"), coa))?.folderPath).toBe("Technical / Signet Excipients Pvt. Ltd. / Microcrystalline Cellulose 102 / Certificates of Analysis");
     const maker = (await listParties(prisma, orgId)).find((p) => p.key === "signet excipients")!;
     expect(maker.side).toBe("supplier");
-    const [material] = await listMaterials(prisma, orgId);
+    const material = (await listMaterials(prisma, orgId)).find((m) => m.name === "Microcrystalline Cellulose 102");
     expect(material).toMatchObject({ partyId: maker.id, name: "Microcrystalline Cellulose 102", key: "microcrystalline cellulose 102" });
     expect((await prisma.storedFile.findUniqueOrThrow({ where: { id: coa } })).materialId).toBe(material!.id);
-    const tree = await prisma.folder.findMany({ where: { orgId, kind: { in: ["tech_root", "tech_party", "material", "tech_doc"] } }, orderBy: { createdAt: "asc" } });
+    const tree = await prisma.folder.findMany({ where: { orgId, OR: [{ kind: "tech_root" }, { partyId: maker.id, kind: { in: ["tech_party", "material", "tech_doc"] } }] }, orderBy: { createdAt: "asc" } });
     expect(tree.map((f) => [f.kind, f.name])).toEqual([
       ["tech_root", "Technical"],
       ["tech_party", "Signet Excipients Pvt. Ltd."],
@@ -236,7 +263,7 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
     );
     expect(suggestion).toMatchObject({ newParty: false, newMaterial: true, path: "Technical / Signet Excipients Pvt. Ltd. / MCC102 / Safety Data Sheets" });
     await fileTo(prisma, admin, { fileId: sds, destination: { ...suggestion!.destination, materialName: "Microcrystalline  Cellulose 102" } as never });
-    expect(await prisma.material.count({ where: { orgId } })).toBe(1);
+    expect(await prisma.material.count({ where: { orgId, partyId: maker.id } })).toBe(1);
     expect((await files.getFile(prisma, await ctxFor("admin"), sds))?.folderPath).toBe("Technical / Signet Excipients Pvt. Ltd. / Microcrystalline Cellulose 102 / Safety Data Sheets");
     expect(destinationOf((await prisma.storedFile.findUniqueOrThrow({ where: { id: sds } })).folderId, await ctxFor("admin"), await listParties(prisma, orgId), await listMaterials(prisma, orgId))).toMatchObject({
       kind: "technical",
@@ -279,7 +306,7 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
     const r = await resetFiles(prisma, orgId, "cli:test");
 
     expect(r.files).toBeGreaterThan(0);
-    expect(r.parties).toBe(4);
+    expect(r.parties).toBe(6);
     expect(await prisma.storedFile.count({ where: { orgId } })).toBe(0);
     expect(await prisma.fileVersion.count({ where: { file: { orgId } } })).toBe(0);
     expect(await prisma.party.count({ where: { orgId } })).toBe(0);
