@@ -250,7 +250,7 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
       ["tech_doc", "Certificates of Analysis"],
     ]);
     expect(tree[0]).toMatchObject({ sortOrder: -1, parentId: null });
-    expect(await prisma.auditLog.findFirst({ where: { orgId, action: "material.create" } })).toMatchObject({ after: { name: "Microcrystalline Cellulose 102", supplier: "Signet Excipients Pvt. Ltd." } });
+    expect(await prisma.auditLog.findFirst({ where: { orgId, action: "material.create", targetId: material!.id } })).toMatchObject({ after: { name: "Microcrystalline Cellulose 102", supplier: "Signet Excipients Pvt. Ltd." } });
 
     // Same manufacturer and material in another spelling: no new folders, and the AI's stored suggestion resolves to them.
     const sds = await waiting("sara", "MCC-102-SDS.pdf");
