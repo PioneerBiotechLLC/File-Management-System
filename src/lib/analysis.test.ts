@@ -75,6 +75,10 @@ function validInput(overrides: Record<string, unknown> = {}) {
       references: [{ kind: "quotation", value: "QT-2291" }],
       amounts: [{ value: 1250.5, currency: "aed" }],
       products: ["Insulin glargine 100 IU/ml"],
+      items: [
+        { description: "  Insulin glargine 100 IU/ml, 3 ml pen ", quantity: 500, unit: " pens ", unitPrice: 2.501, total: 1250.5, currency: "aed" },
+        { description: "Delivery", quantity: null, unit: null, unitPrice: null, total: null, currency: "" },
+      ],
       expiryDate: null,
     },
     tags: ["Gulf Pharmacy", " insulin ", "insulin", "UAE"],
@@ -122,6 +126,10 @@ describe("parseAnalysis", () => {
     expect(a.docDate?.toISOString()).toBe("2026-03-15T00:00:00.000Z");
     expect(a.tags).toEqual(["gulf pharmacy", "insulin", "uae"]);
     expect(a.facts.amounts).toEqual([{ value: 1250.5, currency: "AED" }]);
+    expect(a.facts.items).toEqual([
+      { description: "Insulin glargine 100 IU/ml, 3 ml pen", quantity: 500, unit: "pens", unitPrice: 2.501, total: 1250.5, currency: "AED" },
+      { description: "Delivery", quantity: null, unit: null, unitPrice: null, total: null, currency: null },
+    ]);
     expect(a.facts).not.toHaveProperty("expiryDate");
     expect(a.filing).toEqual({ ...trading(), partyName: "Gulf Pharmacy L.L.C." });
   });
@@ -294,7 +302,13 @@ const summary = {
   summary: "Quotation for insulin glargine to Gulf Pharmacy.",
   docType: "quotation" as const,
   docDate: new Date("2026-03-15T00:00:00Z"),
-  facts: { parties: ["API Pharma"], references: [{ kind: "quotation", value: "QT-2291" }], amounts: [{ value: 1250.5, currency: "AED" }], products: ["Insulin"] },
+  facts: {
+    parties: ["API Pharma"],
+    references: [{ kind: "quotation", value: "QT-2291" }],
+    amounts: [{ value: 1250.5, currency: "AED" }],
+    products: ["Insulin"],
+    items: [{ description: "Insulin glargine 100 IU/ml", quantity: 500, unit: "pens", unitPrice: 2.5, total: 1250.5, currency: "AED" }],
+  },
 };
 const suggestRequest = { model: "claude-haiku-5-5", company: { name: "API Pharma", domain: "api-pharma.net" }, folders, parties, summary };
 

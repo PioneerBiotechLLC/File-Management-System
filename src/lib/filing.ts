@@ -45,6 +45,12 @@ export function summaryText(s: ConfirmedSummary): string {
     `Amounts: ${s.facts.amounts.map((a) => `${a.value} ${a.currency}`).join("; ") || "(none)"}`,
     `Products: ${s.facts.products.join("; ") || "(none)"}`,
   ];
+  // The first lines say what kind of deal it is; the rest would only cost tokens.
+  for (const item of s.facts.items.slice(0, 10)) {
+    const qty = item.quantity === null ? "" : ` × ${item.quantity}${item.unit ? ` ${item.unit}` : ""}`;
+    const price = item.unitPrice === null ? "" : ` @ ${item.unitPrice}${item.currency ? ` ${item.currency}` : ""}`;
+    lines.push(`Item: ${item.description}${qty}${price}`);
+  }
   if (s.facts.expiryDate) lines.push(`Expires: ${s.facts.expiryDate}`);
   return lines.join("\n");
 }

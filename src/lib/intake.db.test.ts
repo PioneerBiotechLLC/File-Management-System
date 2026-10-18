@@ -182,6 +182,7 @@ describe.skipIf(!TEST_DATABASE_URL)("intake: AI reading, summary confirmation an
       references: "delivery note DN-77; B2291",
       amounts: "1,250.50 AED; usd 300",
       products: "Metformin 500 mg, 30 tablets\n",
+      items: "Metformin 500 mg, 30 tablets | 20 cartons | 62.525 AED | 1,250.50 AED\nFreight | | | 300 usd\nSamples\n",
       expiryDate: "",
       tags: "Al Noor, al noor",
     });
@@ -199,7 +200,15 @@ describe.skipIf(!TEST_DATABASE_URL)("intake: AI reading, summary confirmation an
         { value: 300, currency: "USD" },
       ],
       products: ["Metformin 500 mg, 30 tablets"],
+      items: [
+        { description: "Metformin 500 mg, 30 tablets", quantity: 20, unit: "cartons", unitPrice: 62.525, total: 1250.5, currency: "AED" },
+        { description: "Freight", quantity: null, unit: null, unitPrice: null, total: 300, currency: "USD" },
+        { description: "Samples", quantity: null, unit: null, unitPrice: null, total: null, currency: null },
+      ],
     });
+    // The form shows the items back the same way, so confirming again changes nothing.
+    expect(intake.summaryToForm(row).items).toBe("Metformin 500 mg, 30 tablets | 20 cartons | 62.525 AED | 1250.5 AED\nFreight | | | 300 USD\nSamples");
+    await expect(intake.confirmSummary(prisma, ctx, company, { ...intake.summaryToForm(row), fileId, items: "Freight | twenty" })).rejects.toThrow(/Enter items as/);
     expect(await prisma.auditLog.findFirst({ where: { action: "file.summary", targetId: fileId } })).toMatchObject({ after: { source: "manual" } });
     await files.moveFile(prisma, ctx, { fileId, folderId: folder["Logistics/Delivery Notes"]! });
     expect((await fileRow(fileId)).status).toBe("ready");

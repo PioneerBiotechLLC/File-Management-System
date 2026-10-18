@@ -23,7 +23,44 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   return { title: (await getFile(db(), ctx, id))?.name ?? "File" };
 }
 
-type Facts = { parties?: string[]; references?: { kind: string; value: string }[]; amounts?: { value: number; currency: string }[]; products?: string[]; expiryDate?: string };
+type Facts = {
+  parties?: string[];
+  references?: { kind: string; value: string }[];
+  amounts?: { value: number; currency: string }[];
+  products?: string[];
+  items?: { description: string; quantity: number | null; unit: string | null; unitPrice: number | null; total: number | null; currency: string | null }[];
+  expiryDate?: string;
+};
+
+const money = (value: number | null, currency: string | null) => (value === null ? "" : `${value.toLocaleString("en")}${currency ? ` ${currency}` : ""}`);
+
+/** The goods listed on the document, as the AI or the uploader recorded them. */
+function ItemsTable({ items }: { items: NonNullable<Facts["items"]> }) {
+  return (
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="text-muted-foreground text-left">
+          <th className="py-1 font-normal">Item</th>
+          <th className="py-1 text-right font-normal">Quantity</th>
+          <th className="py-1 text-right font-normal">Unit price</th>
+          <th className="py-1 text-right font-normal">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((item, i) => (
+          <tr key={i} className="border-t">
+            <td dir="auto" className="py-1 pr-3">
+              {item.description}
+            </td>
+            <td className="py-1 text-right whitespace-nowrap">{item.quantity === null ? "" : `${item.quantity.toLocaleString("en")}${item.unit ? ` ${item.unit}` : ""}`}</td>
+            <td className="py-1 text-right whitespace-nowrap">{money(item.unitPrice, item.currency)}</td>
+            <td className="py-1 text-right whitespace-nowrap">{money(item.total, item.currency)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
 
 function FactsTable({ facts }: { facts: Facts }) {
   const rows: [string, string][] = [];
@@ -32,16 +69,22 @@ function FactsTable({ facts }: { facts: Facts }) {
   if (facts.amounts?.length) rows.push(["Amounts", facts.amounts.map((a) => `${a.value.toLocaleString("en")} ${a.currency}`).join(", ")]);
   if (facts.products?.length) rows.push(["Products", facts.products.join(", ")]);
   if (facts.expiryDate) rows.push(["Expires", facts.expiryDate]);
-  if (rows.length === 0) return null;
+  const items = facts.items ?? [];
+  if (rows.length === 0 && items.length === 0) return null;
   return (
-    <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-      {rows.map(([k, v], i) => (
-        <div key={i} className="contents">
-          <dt className="text-muted-foreground capitalize">{k.replaceAll("_", " ")}</dt>
-          <dd dir="auto">{v}</dd>
-        </div>
-      ))}
-    </dl>
+    <div className="grid gap-3">
+      {rows.length > 0 && (
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+          {rows.map(([k, v], i) => (
+            <div key={i} className="contents">
+              <dt className="text-muted-foreground capitalize">{k.replaceAll("_", " ")}</dt>
+              <dd dir="auto">{v}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {items.length > 0 && <ItemsTable items={items} />}
+    </div>
   );
 }
 

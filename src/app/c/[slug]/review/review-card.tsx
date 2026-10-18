@@ -171,6 +171,7 @@ function SummaryStep({
             references: field("references"),
             amounts: field("amounts"),
             products: field("products"),
+            items: field("items"),
             expiryDate: field("expiryDate"),
             tags: field("tags"),
           });
@@ -255,6 +256,18 @@ function SummaryStep({
           <Label htmlFor={`amounts-${file.id}`}>Prices and totals</Label>
           <Input id={`amounts-${file.id}`} name="amounts" defaultValue={file.form.amounts} placeholder="1,250.50 AED, 300 USD" />
         </div>
+      </div>
+      <div className="grid gap-1.5">
+        <Label htmlFor={`items-${file.id}`}>Line items (one per line: description | quantity | unit price | total)</Label>
+        <textarea
+          id={`items-${file.id}`}
+          name="items"
+          dir="auto"
+          rows={3}
+          defaultValue={file.form.items}
+          placeholder={"Maize Starch 16000 kg | 16000 kg | 7.50 AED | 120000 AED\nDMEM 500 ml | 200 bottles | 14.70 EUR"}
+          className={FIELD}
+        />
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="grid gap-1.5">

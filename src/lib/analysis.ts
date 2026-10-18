@@ -17,8 +17,8 @@ const LANGUAGES = ["en", "ar", "mixed", "other"] as const;
  * PDFs cost roughly 1,500–3,000 text tokens per page plus the page image.
  */
 const MAX_INPUT_TOKENS = 200_000;
-/** The summary and facts only; nothing from the file is transcribed or kept. */
-const MAX_OUTPUT_TOKENS = 8_000;
+/** The summary and facts only; nothing from the file is transcribed or kept. Line items on a long price list take the most. */
+const MAX_OUTPUT_TOKENS = 12_000;
 
 export type FolderChoice = { id: string; path: string; description: string | null };
 
@@ -61,6 +61,7 @@ How to fill record_analysis:
 - facts.references: every identifier printed on the document, copied exactly, each with a short kind such as quotation, invoice, purchase_order, batch, lot, contract, registration, awb, bill_of_lading, letter_of_credit, tender.
 - facts.amounts: the main monetary amounts as numbers with ISO 4217 currency codes (for example 1250.5 and "AED"): totals, subtotals and unit prices worth searching for. Leave out line-item noise.
 - facts.products: every product or material named, with strength, grade or pack size where shown.
+- facts.items: the goods or services listed line by line on quotations, purchase orders, order confirmations, invoices, credit notes, delivery notes and price lists, every line in the document's order: description as printed (product, grade, pack size), quantity and its unit (kg, L, pcs, drums, bottles…), unit price, line total and ISO 4217 currency; null for whatever that line does not show. Empty for documents that list no goods (certificates, letters, contracts).
 - facts.expiryDate: YYYY-MM-DD when the document expires (certificates, licences, contracts, batches), otherwise null.
 - tags: 3 to 8 short search keywords such as the customer, supplier, product family or country.
 - filing: where the document belongs, by the filing rules below.
@@ -69,11 +70,12 @@ ${FILING_RULES}`;
 
 /** Strict tool schemas express "or null" with anyOf. */
 const nullableString = { anyOf: [{ type: "string" }, { type: "null" }] };
+const nullableNumber = { anyOf: [{ type: "number" }, { type: "null" }] };
 
 const FACTS_SCHEMA = {
   type: "object" as const,
   additionalProperties: false,
-  required: ["parties", "references", "amounts", "products", "expiryDate"],
+  required: ["parties", "references", "amounts", "products", "items", "expiryDate"],
   properties: {
     parties: { type: "array", items: { type: "string" } },
     references: {
@@ -95,6 +97,22 @@ const FACTS_SCHEMA = {
       },
     },
     products: { type: "array", items: { type: "string" } },
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["description", "quantity", "unit", "unitPrice", "total", "currency"],
+        properties: {
+          description: { type: "string" },
+          quantity: nullableNumber,
+          unit: nullableString,
+          unitPrice: nullableNumber,
+          total: nullableNumber,
+          currency: { ...nullableString, description: "ISO 4217" },
+        },
+      },
+    },
     expiryDate: { ...nullableString, description: "YYYY-MM-DD" },
   },
 };
@@ -144,6 +162,9 @@ export const ANALYSIS_TOOL: Tool = {
 
 const clip = (max: number) => (s: string) => s.trim().slice(0, max);
 const list = <T extends z.ZodType>(item: T, max: number) => z.array(item).transform((items) => items.slice(0, max));
+const currency = (c: string) => c.trim().toUpperCase().slice(0, 3);
+const optionalText = (max: number) => z.string().nullable().transform((v) => v?.trim().slice(0, max) || null);
+const optionalNumber = z.number().finite().nullable();
 
 /** YYYY-MM-DD between 1900 and 2100 as a UTC date; anything else becomes null. */
 const isoDate = z
@@ -170,10 +191,24 @@ const tagList = z.array(z.string()).transform((tags) => {
 export const factsInput = z.object({
   parties: list(z.string().transform(clip(200)), 30),
   references: list(z.object({ kind: z.string().transform(clip(40)), value: z.string().transform(clip(120)) }), 50),
-  amounts: list(z.object({ value: z.number().finite(), currency: z.string().transform((c) => c.trim().toUpperCase().slice(0, 3)) }), 30),
+  amounts: list(z.object({ value: z.number().finite(), currency: z.string().transform(currency) }), 30),
   products: list(z.string().transform(clip(200)), 50),
+  /** One priced or counted line of a quotation, order, invoice, delivery note or price list. */
+  items: list(
+    z.object({
+      description: z.string().transform(clip(200)),
+      quantity: optionalNumber,
+      unit: optionalText(20),
+      unitPrice: optionalNumber,
+      total: optionalNumber,
+      currency: z.string().nullable().transform((c) => (c ? currency(c) || null : null)),
+    }),
+    200,
+  ),
   expiryDate: isoDate,
 });
+
+export type LineItem = z.output<typeof factsInput>["items"][number];
 
 /** Unknown values fall back to null, so a slightly off answer is filed by hand rather than failing the read. */
 const cleanName = z
@@ -209,7 +244,7 @@ const analysisInput = z.object({
   filing: filingInput,
 });
 
-/** The facts as stored on the file: { parties, references, amounts, products, expiryDate? }. */
+/** The facts as stored on the file: { parties, references, amounts, products, items, expiryDate? }. */
 export type Facts = Omit<z.output<typeof factsInput>, "expiryDate"> & { expiryDate?: string };
 
 export type Filing = z.output<typeof filingInput>;

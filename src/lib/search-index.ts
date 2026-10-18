@@ -33,6 +33,7 @@ export function indexTextFor(file: Indexable): string {
     ...facts.references.map((r) => `${r.kind} ${r.value}`),
     ...facts.amounts.map((a) => `${a.value} ${a.currency}`),
     ...facts.products,
+    ...facts.items.map((i) => i.description),
     facts.expiryDate ?? null,
     ...file.tags,
   ]);

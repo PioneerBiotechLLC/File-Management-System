@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { analyzeFile, factsInput, filingIsUsable, storedFacts, type Facts, type Filing } from "@/lib/analysis";
+import { analyzeFile, factsInput, filingIsUsable, storedFacts, type Facts, type Filing, type LineItem } from "@/lib/analysis";
 import { Prisma } from "@/generated/prisma/client";
 import type { Db } from "@/lib/db";
 import { DOC_TYPES, type DocType } from "@/lib/doc-types";
@@ -260,6 +260,50 @@ const referencesField = z.string().transform((raw) =>
   }),
 );
 
+/** "7.50 AED", "AED 7.50" or just "7.50": a price with or without its currency. */
+const PRICE = /^(?:([A-Za-z]{3})\s+)?(\d+(?:\.\d+)?)(?:\s*([A-Za-z]{3}))?$/;
+/** "16000 kg", "20 drums" or just "16000". */
+const QUANTITY = /^(\d+(?:\.\d+)?)\s*(.*)$/;
+
+/**
+ * One item per line, its parts separated by "|": description | quantity unit | unit price | total.
+ * Every part after the description may be left empty, so "Maize Starch | 16000 kg" is fine.
+ */
+const itemsField = z.string().transform((raw, c) => {
+  const out: LineItem[] = [];
+  const help = (part: string) => `Enter items as "description | quantity unit | unit price AED | total AED", one per line (could not read “${part}”).`;
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const [description = "", qty = "", price = "", total = ""] = line.split("|").map((p) => p.replace(/(?<=\d),(?=\d{3}(?!\d))/g, "").trim().replace(/\s+/g, " "));
+    const q = qty ? qty.match(QUANTITY) : null;
+    const p = price ? price.match(PRICE) : null;
+    const t = total ? total.match(PRICE) : null;
+    if (!description || (qty && !q) || (price && !p) || (total && !t)) {
+      c.addIssue({ code: "custom", message: help(line.trim()) });
+      return z.NEVER;
+    }
+    const currency = p?.[1] ?? p?.[3] ?? t?.[1] ?? t?.[3] ?? null;
+    out.push({
+      description,
+      quantity: q ? Number(q[1]) : null,
+      unit: q?.[2] || null,
+      unitPrice: p ? Number(p[2]) : null,
+      total: t ? Number(t[2]) : null,
+      currency: currency ? currency.toUpperCase() : null,
+    });
+  }
+  return out;
+});
+
+/** The form text for a stored item, the same way itemsField reads it. */
+function itemToLine(item: LineItem): string {
+  const money = (v: number | null) => (v === null ? "" : `${v}${item.currency ? ` ${item.currency}` : ""}`);
+  const parts = [item.description, item.quantity === null ? "" : `${item.quantity}${item.unit ? ` ${item.unit}` : ""}`, money(item.unitPrice), money(item.total)];
+  while (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
+  // "Freight | | | 300 USD": an empty part keeps its bar and nothing else.
+  return parts.map((p, i) => (i === 0 || !p ? p : ` ${p}`)).join(" |");
+}
+
 const tagsField = z.string().transform((raw) => {
   const tags: string[] = [];
   for (const part of splitList(raw)) {
@@ -281,6 +325,7 @@ const summaryForm = z.object({
   references: listField.pipe(referencesField),
   amounts: listField.pipe(amountsField),
   products: listField.transform(splitLines),
+  items: listField.pipe(itemsField),
   expiryDate: dateField,
   tags: listField.pipe(tagsField),
 });
@@ -306,6 +351,7 @@ export function summaryToForm(file: {
     references: facts.references.map((r) => (r.kind === "reference" ? r.value : `${r.kind} ${r.value}`)).join("\n"),
     amounts: facts.amounts.map((a) => `${a.value} ${a.currency}`).join(", "),
     products: facts.products.join("\n"),
+    items: facts.items.map(itemToLine).join("\n"),
     expiryDate: facts.expiryDate ?? "",
     tags: file.tags.join(", "),
   };
@@ -313,8 +359,8 @@ export function summaryToForm(file: {
 
 /** Whatever is in the JSON column, as well-formed facts. */
 export function factsOf(value: unknown): Facts {
-  const parsed = factsInput.safeParse({ parties: [], references: [], amounts: [], products: [], expiryDate: null, ...(value && typeof value === "object" ? value : {}) });
-  return parsed.success ? storedFacts(parsed.data) : { parties: [], references: [], amounts: [], products: [] };
+  const parsed = factsInput.safeParse({ parties: [], references: [], amounts: [], products: [], items: [], expiryDate: null, ...(value && typeof value === "object" ? value : {}) });
+  return parsed.success ? storedFacts(parsed.data) : { parties: [], references: [], amounts: [], products: [], items: [] };
 }
 
 /**
@@ -352,10 +398,10 @@ export async function confirmSummary(
   if (!file) throw notWaiting();
   const parsed = summaryForm.safeParse(input);
   if (!parsed.success) throw new UserError(parsed.error.issues[0]?.message ?? "Check the summary and try again.");
-  const { tags, parties, references, amounts, products, expiryDate, ...rest } = parsed.data;
-  // The same limits as the AI's output: so many parties, products and references, so long each.
-  const boundedFacts = factsInput.safeParse({ parties, references, amounts, products, expiryDate: expiryDate?.toISOString().slice(0, 10) ?? null });
-  if (!boundedFacts.success) throw new UserError("Check the parties, references, amounts and products, then try again.");
+  const { tags, parties, references, amounts, products, items, expiryDate, ...rest } = parsed.data;
+  // The same limits as the AI's output: so many parties, products, items and references, so long each.
+  const boundedFacts = factsInput.safeParse({ parties, references, amounts, products, items, expiryDate: expiryDate?.toISOString().slice(0, 10) ?? null });
+  if (!boundedFacts.success) throw new UserError("Check the parties, references, amounts, products and items, then try again.");
   const facts = storedFacts(boundedFacts.data);
   const confirmed: ConfirmedSummary = { ...rest, docType: rest.docType as DocType | null, facts };
 

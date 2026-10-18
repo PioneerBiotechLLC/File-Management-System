@@ -98,7 +98,14 @@ const brief = (hit: SearchHit) => ({
   products: hit.facts.products.slice(0, 6),
 });
 
-const full = (hit: SearchHit) => ({ ...brief(hit), summary: hit.summary, references: hit.facts.references, products: hit.facts.products, expires: hit.facts.expiryDate ?? null });
+const full = (hit: SearchHit) => ({
+  ...brief(hit),
+  summary: hit.summary,
+  references: hit.facts.references,
+  products: hit.facts.products,
+  items: hit.facts.items.map((i) => [i.description, i.quantity === null ? null : `${i.quantity} ${i.unit ?? ""}`.trim(), i.unitPrice, i.total, i.currency]),
+  expires: hit.facts.expiryDate ?? null,
+});
 
 export type AskResult = {
   text: string;
