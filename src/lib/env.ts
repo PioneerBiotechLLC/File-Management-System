@@ -83,6 +83,10 @@ const groups = {
     /** Bearer token Vercel Cron sends to /api/cron/*. The sweep refuses to run without it. */
     CRON_SECRET: z.string().trim().min(16, "must be at least 16 characters (openssl rand -base64 32)").optional(),
   }),
+  integrations: z.object({
+    /** Bearer token the Email Tracker sends to /api/integrations/*. Unset = email attachments are refused. */
+    FILES_INTEGRATION_API_KEY: z.string().trim().min(32, "must be at least 32 characters (openssl rand -base64 32)").optional(),
+  }),
 } as const;
 
 type Groups = typeof groups;
@@ -122,6 +126,7 @@ export const storageEnv = () => readGroup("storage");
 export const aiEnv = () => readGroup("ai");
 export const limitsEnv = () => readGroup("limits");
 export const cronEnv = () => readGroup("cron");
+export const integrationsEnv = () => readGroup("integrations");
 
 /** The tenant a tenant-specific issuer URL names, or null for the multi-tenant endpoints. */
 export function tenantOfIssuer(issuer: string): string | null {

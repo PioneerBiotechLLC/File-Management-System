@@ -28,6 +28,12 @@ Admins have a **Bulk upload** tab: choose a folder (subfolders included) or a se
 ## Re-filing
 
 Admins have a **Re-file** tab for files that are already in the system. Choose a group (Technical documents, Customer and supplier documents, Company folders, or the files left in Review), tick **Preview only** to see what would move, then run it again without the tick. The AI reads each stored file again with the current filing rules and moves it only when it is at least 60% sure it belongs elsewhere (50% for files in Review). Nothing is uploaded again; every move is in the Log, and the page can be downloaded as a CSV report. Each file costs one AI read, the same as a first upload. A customer's own specification for a material is filed under that customer's **Specifications** folder, not under Technical.
+## Email attachments from the Email Tracker
+
+The Email Tracker (the sibling app) sends every attachment of every email it stores, up to 25 MB, in through `POST /api/integrations/email-attachments` (start: metadata, answered with a presigned upload URL or the identical file already here), a `PUT` of the bytes straight to the bucket, and `POST /api/integrations/email-attachments/<id>/confirm`. The bearer token is `FILES_INTEGRATION_API_KEY` (at least 32 characters; the same value is the tracker's `FILES_API_KEY`); without it the endpoints refuse everything, and the middleware leaves them open only because of that check. The contract is written up in the tracker repository, `docs/files-integration.md`.
+
+Each company gets a system user, **email-tracker@<domain>**: deactivated (it can never sign in; Settings → Users shows it as such), an editor, so its AI reads count against the usual per-person and company spend caps (raise its caps in Usage if the mail volume needs it). The file is uploaded as that user with *Source: email attachment* and the email's Message-ID as its source reference; the Log records the email's subject, sender, recipients, mailbox and a link back to the tracker (`file.email_attachment`). After confirm the AI reads the file in the background (up to five minutes) and files it exactly like a bulk upload: at least 50 % sure → filed at once, the summary standing as the AI wrote it; otherwise, or when the AI could not read it, it waits in **Review** for an admin. A file whose bytes are already in the company (the same attachment sent twice, or one a colleague was Cc'd on) is not stored again; the tracker links the email to the existing file.
+
 ## Search
 
 Search looks only at what people confirmed: the name, title, summary, type, date, parties, reference numbers, amounts, products and tags. Nothing from a file's contents is indexed. Access is applied in the database query, so a file in a restricted folder never appears for someone without access, and the AI never sees it either.
@@ -104,7 +110,7 @@ Uploads go to a staging key in the bucket and are copied to their final key when
 | `pnpm folders seed [--org <slug>]` | Create any missing default folders |
 | `pnpm folders restructure --org <slug>` | One-time move to year folders: Bank to the top, old Sales/Purchasing/Logistics/Finance closed (files stay readable) |
 | `pnpm index rebuild [--org <slug>]` | Rebuild the search index |
-| `pnpm test` | Unit tests; database tests also run when `TEST_DATABASE_URL` is set |
+| `pnpm test` | Unit tests; database tests also run when `TEST_DATABASE_URL` is set (`email-attachments.db.test.ts` covers the tracker's hand-off) |
 | `pnpm typecheck`, `pnpm build` | Type-check; production build |
 | `pnpm db:generate`, `db:migrate`, `db:deploy`, `db:studio` | Prisma. On Vercel the build runs `migrate deploy` itself, so a push applies new migrations before the new code goes live |
 

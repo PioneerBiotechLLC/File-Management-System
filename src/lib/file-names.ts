@@ -60,6 +60,8 @@ const TYPES_BY_EXTENSION: Record<string, string> = {
   tiff: "image/tiff",
   txt: "text/plain",
   csv: "text/csv",
+  html: "text/html",
+  htm: "text/html",
   doc: "application/msword",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   xls: "application/vnd.ms-excel",

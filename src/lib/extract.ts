@@ -1,6 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import ExcelJS from "exceljs";
 import mammoth from "mammoth";
+import { declaredCharset, htmlToText } from "@/lib/html-text";
 
 /**
  * Turns an uploaded file into something Claude can read, in memory only: nothing produced here is
@@ -37,6 +38,8 @@ type FileKind =
   | { kind: "word" }
   | { kind: "spreadsheet" }
   | { kind: "text" }
+  /** A web page or an email saved as HTML: read as text once the markup is stripped. */
+  | { kind: "html" }
   | { kind: "other"; label: string };
 
 export type Extraction =
@@ -44,7 +47,8 @@ export type Extraction =
   | { kind: "text"; text: string; readStatus: "full" | "partial" }
   | { kind: "unreadable"; readStatus: "not_read"; reason: string };
 
-const TEXT_EXTENSIONS = new Set(["txt", "csv", "tsv", "md", "markdown", "json", "xml", "html", "htm", "log", "ini", "yaml", "yml"]);
+const TEXT_EXTENSIONS = new Set(["txt", "csv", "tsv", "md", "markdown", "json", "xml", "log", "ini", "yaml", "yml"]);
+const HTML_EXTENSIONS = new Set(["html", "htm", "xhtml"]);
 const WORD_EXTENSIONS = new Set(["docx", "docm"]);
 const SPREADSHEET_EXTENSIONS = new Set(["xlsx", "xlsm"]);
 const WORD_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -142,10 +146,17 @@ export function detectFileKind(bytes: Uint8Array, name: string, mimeType: string
     if (SPREADSHEET_EXTENSIONS.has(ext) || mime === SPREADSHEET_MIME) return { kind: "spreadsheet" };
     return { kind: "other", label: ext || "zip" };
   }
+  if (looksBinary(bytes)) return { kind: "other", label: ext || mime || "unknown" };
+  if (HTML_EXTENSIONS.has(ext) || mime === "text/html" || mime === "application/xhtml+xml" || looksHtml(bytes)) return { kind: "html" };
   const textual =
     TEXT_EXTENSIONS.has(ext) || mime.startsWith("text/") || mime === "application/json" || mime === "application/xml";
-  if (textual && !looksBinary(bytes)) return { kind: "text" };
+  if (textual) return { kind: "text" };
   return { kind: "other", label: ext || mime || "unknown" };
+}
+
+/** A page saved under another name: the file starts with a doctype or an html tag. */
+function looksHtml(bytes: Uint8Array): boolean {
+  return /^\s*(?:\uFEFF)?\s*<(?:!doctype html|html)[\s>]/i.test(new TextDecoder("latin1").decode(bytes.subarray(0, 256)));
 }
 
 function looksBinary(bytes: Uint8Array): boolean {
@@ -260,6 +271,12 @@ export async function extract(bytes: Uint8Array, name: string, mimeType: string)
     case "text": {
       const text = decodeText(bytes);
       if (!text.trim()) return unreadable("File is empty");
+      return { kind: "text", ...capText(text) };
+    }
+    case "html": {
+      const charset = declaredCharset(bytes);
+      const text = htmlToText(charset ? new TextDecoder(charset).decode(bytes) : decodeText(bytes));
+      if (!text) return unreadable("Web page has no text");
       return { kind: "text", ...capText(text) };
     }
     case "other":

@@ -98,6 +98,11 @@ describe("detectFileKind", () => {
   it("recognises text by extension or type, but not binary content", () => {
     expect(detectFileKind(bytes("a,b\n1,2"), "list.csv", "")).toEqual({ kind: "text" });
     expect(detectFileKind(bytes("hello"), "notes", "text/plain; charset=utf-8")).toEqual({ kind: "text" });
+    expect(detectFileKind(bytes("<p>hi</p>"), "page.html", "")).toEqual({ kind: "html" });
+    expect(detectFileKind(bytes("<p>hi</p>"), "mail", "text/html; charset=utf-8")).toEqual({ kind: "html" });
+    expect(detectFileKind(bytes("\n<!DOCTYPE html><html>"), "saved.txt", "text/plain")).toEqual({ kind: "html" });
+    expect(detectFileKind(bytes("<html lang=en>"), "noext", "")).toEqual({ kind: "html" });
+    expect(detectFileKind(bytes("<p>html</p> in a text file"), "notes.txt", "text/plain")).toEqual({ kind: "text" });
     expect(detectFileKind(new Uint8Array([0x41, 0, 0x42]), "data.txt", "text/plain")).toEqual({ kind: "other", label: "txt" });
   });
 
