@@ -22,6 +22,7 @@
     "user": "tsx scripts/cli.ts user",
     "folders": "tsx scripts/cli.ts folders",
     "index": "tsx scripts/cli.ts index",
+    "facts": "tsx scripts/cli.ts facts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

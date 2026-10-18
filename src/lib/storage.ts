@@ -61,6 +61,12 @@ export function objectKey(orgId: string, fileId: string, versionNo: number): str
   return `${orgId}/${fileId}/${versionNo}`;
 }
 
+/** The file's facts CSV (facts-csv.ts), beside its versions so a purge of the file takes it too. */
+export function factsKey(orgId: string, fileId: string): string {
+  if (!ID.test(orgId) || !ID.test(fileId)) throw new Error("Invalid id in object key");
+  return `${orgId}/${fileId}/facts.csv`;
+}
+
 /** Where the browser uploads a version to, before it is confirmed and copied to its object key. */
 export function uploadKey(orgId: string, fileId: string, versionNo: number): string {
   return `${objectKey(orgId, fileId, versionNo)}.upload`;
@@ -133,6 +139,12 @@ export async function getObject(key: string): Promise<Uint8Array | null> {
     if (error instanceof NoSuchKey || error instanceof NotFound) return null;
     throw error;
   }
+}
+
+/** Writes a small object the server made itself (a facts CSV); file bytes never pass through here. */
+export async function putObject(key: string, body: string | Uint8Array, contentType: string): Promise<void> {
+  const { s3, bucket: Bucket } = bucket();
+  await s3.send(new PutObjectCommand({ Bucket, Key: key, Body: body, ContentType: contentType }));
 }
 
 export async function remove(key: string): Promise<void> {

@@ -15,6 +15,7 @@ vi.mock("@/lib/storage", async (importOriginal) => {
     head: async (key: string) => (stored.has(key) ? { sizeBytes: stored.get(key)!, contentType: null } : null),
     copy: async (from: string, to: string) => void stored.set(to, stored.get(from)!),
     remove: async (key: string) => void stored.delete(key),
+    putObject: async () => undefined,
     checkBucket: async () => undefined,
     removePrefix: async (prefix: string) => {
       const keys = [...stored.keys()].filter((k) => k.startsWith(prefix));
@@ -96,7 +97,8 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
     expect(party).toMatchObject({ side: "customer", name: "Gulf Pharmacy LLC", key: "gulf pharmacy" });
     expect((await prisma.storedFile.findUniqueOrThrow({ where: { id: fileId } })).partyId).toBe(party!.id);
 
-    const folders = await prisma.folder.findMany({ where: { orgId, kind: { not: "regular" } }, orderBy: { createdAt: "asc" } });
+    // Ids break the tie between folders created in the same millisecond.
+    const folders = await prisma.folder.findMany({ where: { orgId, kind: { not: "regular" } }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] });
     expect(folders.map((f) => [f.kind, f.name])).toEqual([
       ["year", "2026"],
       ["side", "Customers"],

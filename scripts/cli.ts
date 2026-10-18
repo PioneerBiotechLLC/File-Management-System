@@ -7,6 +7,7 @@ import { seedDefaultFolders } from "@/lib/folders";
 import { UserError } from "@/lib/errors";
 import { resetFiles } from "@/lib/reset";
 import { restructureFolders } from "@/lib/restructure";
+import { writeAllFactsCsv } from "@/lib/facts-csv";
 import { reindexAll } from "@/lib/search-index";
 import { addMember, deactivateUser, emailSchema, makeOwner, removeMember } from "@/lib/users";
 
@@ -131,6 +132,18 @@ index
     const company = opts.org ? await companyBySlug(opts.org) : null;
     const count = await reindexAll(db(), company?.id);
     console.log(`Reindexed ${count} files${company ? ` in ${company.slug}` : ""}.`);
+  });
+
+const facts = program.command("facts").description("The facts CSV kept beside each file in the bucket");
+
+facts
+  .command("rebuild")
+  .description("Write (or rewrite) the facts CSV of every file (one company, or all)")
+  .option("--org <slug>", "company slug")
+  .action(async (opts: { org?: string }) => {
+    const company = opts.org ? await companyBySlug(opts.org) : null;
+    const count = await writeAllFactsCsv(db(), company?.id);
+    console.log(`Wrote the facts CSV of ${count} files${company ? ` in ${company.slug}` : ""}.`);
   });
 
 const folders = program.command("folders").description("Folders");

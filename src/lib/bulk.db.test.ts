@@ -5,6 +5,7 @@ import { TEST_DATABASE_URL, freshDatabase } from "@/test/database";
 import { addTestFolders } from "@/test/folders";
 
 const stored = new Map<string, Uint8Array>();
+const written = new Map<string, string>();
 const analyzeFile = vi.fn();
 
 vi.mock("@/lib/storage", async (importOriginal) => {
@@ -19,6 +20,9 @@ vi.mock("@/lib/storage", async (importOriginal) => {
     },
     remove: async (key: string) => {
       stored.delete(key);
+    },
+    putObject: async (key: string, body: string) => {
+      written.set(key, body);
     },
   };
 });
@@ -96,6 +100,11 @@ describe.skipIf(!TEST_DATABASE_URL)("bulk upload: filing without confirmation (d
     const fileId = await uploadAndRead("quote.pdf", folderFiling(folder["Sales/Quotations"]!, 0.5));
     expect(await autoFileAfterRead(prisma, await ctx(), company, fileId)).toMatchObject({ action: "filed", path: "Sales / Quotations", unsure: false });
     expect(await fileRow(fileId)).toMatchObject({ folderId: folder["Sales/Quotations"], status: "ready", unsure: false });
+    // Filing also leaves the facts CSV beside the file in the bucket, with where it went.
+    const csv = written.get(`${orgId}/${fileId}/facts.csv`)!;
+    expect(csv.split("\r\n")[0]).toMatch(/^\uFEFFfile_id,file_name,title,document_type/);
+    expect(csv).toContain(`${fileId},quote.pdf,quote.pdf,`);
+    expect(csv).toContain(",Sales / Quotations,");
   });
 
   it("leaves anything under 50% in Review, wherever the AI thought it went", async () => {

@@ -1,6 +1,6 @@
 import type { Db } from "@/lib/db";
 import { TRASH_DAYS, UPLOAD_WINDOW_MS } from "@/lib/files";
-import { objectKey, remove, uploadKey } from "@/lib/storage";
+import { factsKey, objectKey, remove, uploadKey } from "@/lib/storage";
 
 /**
  * Housekeeping, run daily by /api/cron/sweep: drops uploads that were started and never
@@ -55,6 +55,7 @@ export async function sweep(prisma: Db, now = new Date()): Promise<SweepResult> 
       await remove(objectKey(file.orgId, file.id, v.versionNo));
       await quietly(remove(uploadKey(file.orgId, file.id, v.versionNo)));
     }
+    await quietly(remove(factsKey(file.orgId, file.id)));
     await prisma.$transaction([
       prisma.storedFile.delete({ where: { id: file.id } }),
       prisma.auditLog.create({

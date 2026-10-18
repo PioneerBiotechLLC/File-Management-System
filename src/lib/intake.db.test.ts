@@ -23,6 +23,7 @@ vi.mock("@/lib/storage", async (importOriginal) => {
     remove: async (key: string) => {
       stored.delete(key);
     },
+    putObject: async () => undefined,
   };
 });
 vi.mock("@/lib/analysis", async (importOriginal) => {

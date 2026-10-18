@@ -20,6 +20,7 @@ vi.mock("@/lib/storage", async (importOriginal) => {
       if (!stored.has(from)) throw new Error(`no object at ${from}`);
       stored.set(to, stored.get(from)!);
     },
+    putObject: async () => undefined,
     remove: async (key: string) => {
       removed.push(key);
       stored.delete(key);
