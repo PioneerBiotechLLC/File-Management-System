@@ -1,12 +1,12 @@
 import { analyzeFile, filingIsUsable } from "@/lib/analysis";
-import { AUTO_FILE_THRESHOLD, autoFileAfterRead } from "@/lib/bulk";
+import { AUTO_FILE_THRESHOLD, autoFileAfterRead, autoFileTarget, fileByAi } from "@/lib/bulk";
 import type { Db } from "@/lib/db";
 import { aiEnv, limitsEnv } from "@/lib/env";
 import { UserError } from "@/lib/errors";
 import { extract } from "@/lib/extract";
 import { checkCanMove, type FileContext } from "@/lib/files";
 import { folderChoices, materialChoices, partyChoices, storedFiling } from "@/lib/intake";
-import { fileTo, yearChoice, listMaterials, listParties, suggestionFor } from "@/lib/parties";
+import { yearChoice, listMaterials, listParties, suggestionFor } from "@/lib/parties";
 import type { RefileItem, RefileScope } from "@/lib/refile-scopes";
 import { reindexFile } from "@/lib/search-index";
 import { getObject, head, objectKey } from "@/lib/storage";
@@ -104,13 +104,11 @@ export async function refileOne(prisma: Db, ctx: FileContext, company: Company, 
     year,
     materials,
   );
-  if (!suggestion) return { status: "kept", at: here, reason: "The AI could not tell where it belongs." };
-  const threshold = unfiled ? AUTO_FILE_THRESHOLD : REFILE_THRESHOLD;
-  if (suggestion.confidence < threshold) {
-    return { status: "kept", at: here, reason: `Only ${Math.round(suggestion.confidence * 100)}% sure it belongs in ${suggestion.path}.` };
-  }
-  if (suggestion.path === here) return { status: "unchanged", at: here };
-  if (!opts.apply) return { status: "preview", from: here, to: suggestion.path, confidence: suggestion.confidence };
+  // A filed file is only moved to a place the AI names; one waiting in Review may go to General, as in bulk upload.
+  const target = autoFileTarget(suggestion, filing.filingConfidence, ctx, { threshold: unfiled ? AUTO_FILE_THRESHOLD : REFILE_THRESHOLD, general: unfiled });
+  if ("wait" in target) return { status: "kept", at: here, reason: target.wait };
+  if (target.path === here) return { status: "unchanged", at: here };
+  if (!opts.apply) return { status: "preview", from: here, to: target.path, confidence: target.confidence };
 
   if (unfiled) {
     await prisma.storedFile.update({ where: { id: file.id }, data: filing });
@@ -118,7 +116,7 @@ export async function refileOne(prisma: Db, ctx: FileContext, company: Company, 
     return done.action === "filed" ? { status: "moved", from: here, to: done.path, confidence: done.confidence } : { status: "kept", at: here, reason: done.reason };
   }
   await checkCanMove(prisma, ctx, file.id);
-  await fileTo(prisma, ctx, { fileId: file.id, destination: suggestion.destination, seenAs: suggestion.seenAs });
+  await fileByAi(prisma, ctx, { fileId: file.id, destination: target.destination, seenAs: target.seenAs });
   await reindexFile(prisma, file.id);
-  return { status: "moved", from: here, to: suggestion.path, confidence: suggestion.confidence };
+  return { status: "moved", from: here, to: target.path, confidence: target.confidence };
 }

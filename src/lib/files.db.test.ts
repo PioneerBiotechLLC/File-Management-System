@@ -133,7 +133,7 @@ describe.skipIf(!TEST_DATABASE_URL)("files and folders (database)", () => {
       const base = { size: 10, mimeType: "application/pdf", sha256: sha("x") };
       await expect(files.startUpload(prisma, await ctxFor("admin").then((c) => ({ ...c, role: "viewer" as const })), { ...base, name: "a.pdf" })).rejects.toThrow(/permission/);
       await expect(files.startUpload(prisma, await ctxFor("sara"), { ...base, name: "setup.exe" })).rejects.toThrow(/executable or script/);
-      await expect(files.startUpload(prisma, await ctxFor("sara"), { ...base, name: "big.pdf", size: 101 * 1024 * 1024 })).rejects.toThrow(/100 MB/);
+      await expect(files.startUpload(prisma, await ctxFor("sara"), { ...base, name: "big.pdf", size: 2_100_000_000 })).rejects.toThrow(/1900 MB/);
       await expect(files.startUpload(prisma, await ctxFor("sara"), { ...base, name: "a.pdf", folderId: folder.HR })).rejects.toThrow(/cannot upload to that folder/);
       await expect(files.startUpload(prisma, await ctxFor("sara"), { ...base, name: "a.pdf", folderId: "nope" })).rejects.toThrow(/cannot upload/);
     });

@@ -66,7 +66,8 @@ const groups = {
     /** The most any cap may be set to in Usage. Only the operator, through the environment, can raise these. */
     AI_DAILY_USD_MAX: usd(50),
     AI_MONTHLY_USD_MAX: usd(500),
-    FILES_MAX_MB: positiveInt(100),
+    /** Largest upload. Anything over FILES_AI_MAX_MB is stored but waits in Review for a person to file it. */
+    FILES_MAX_MB: positiveInt(1900),
     /** Files larger than this are not read by the AI; the uploader writes the summary. */
     FILES_AI_MAX_MB: positiveInt(22),
     FILES_AI_SEARCHES_PER_USER_PER_DAY: positiveInt(50),

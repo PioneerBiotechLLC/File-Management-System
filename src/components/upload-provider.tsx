@@ -1,5 +1,7 @@
 "use client";
 
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { AlertCircle, CheckCircle2, ClipboardList, FileUp, Loader2, Sparkles, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -48,9 +50,18 @@ export function useUploads(): Uploads {
 const MAX_PARALLEL = 2;
 const ACTIVE: Phase[] = ["hashing", "uploading", "finishing", "reading"];
 
-export async function sha256Hex(file: File): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+/** Above this a file is hashed a piece at a time, so a large one is never held in memory whole. */
+const WHOLE_HASH_MAX_BYTES = 64 * 1024 * 1024;
+
+export async function sha256Hex(file: Blob): Promise<string> {
+  if (file.size <= WHOLE_HASH_MAX_BYTES) {
+    const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+    return bytesToHex(new Uint8Array(digest));
+  }
+  const hash = sha256.create();
+  const reader = file.stream().getReader();
+  for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) hash.update(chunk.value);
+  return bytesToHex(hash.digest());
 }
 
 export function putToBucket(url: string, file: File, contentType: string, onProgress: (fraction: number) => void): Promise<void> {

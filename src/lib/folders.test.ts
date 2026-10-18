@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_FOLDERS, folderAccess, folderPaths, type FolderNode } from "./folders";
+import { DEFAULT_FOLDERS, folderAccess, folderPaths, generalFolderId, type FolderNode } from "./folders";
 
 const folders: FolderNode[] = [
   { id: "sales", parentId: null, name: "Sales", access: "everyone", isActive: true },
@@ -61,6 +61,28 @@ describe("folderPaths", () => {
     expect(paths.get("quotes")).toBe("Sales / Quotations");
     expect(paths.get("bank")).toBe("Finance / Bank");
     expect(paths.get("sales")).toBe("Sales");
+  });
+});
+
+describe("generalFolderId", () => {
+  const row = (id: string, name: string, extra: { parentId?: string; nameAr?: string; kind?: string; isActive?: boolean } = {}) => ({
+    id,
+    name,
+    parentId: extra.parentId ?? null,
+    nameAr: extra.nameAr ?? null,
+    kind: extra.kind ?? "regular",
+    isActive: extra.isActive ?? true,
+  });
+
+  it("finds the top-level General folder by its English or Arabic name", () => {
+    expect(generalFolderId([row("s", "Sales"), row("g", " general ")], new Set(["s", "g"]))).toBe("g");
+    expect(generalFolderId([row("g", "Misc", { nameAr: "عام" })], new Set(["g"]))).toBe("g");
+  });
+
+  it("ignores a General folder nested elsewhere, closed, or one the user cannot file into", () => {
+    expect(generalFolderId([row("s", "Sales"), row("g", "General", { parentId: "s" })], new Set(["s", "g"]))).toBeNull();
+    expect(generalFolderId([row("g", "General", { isActive: false })], new Set(["g"]))).toBeNull();
+    expect(generalFolderId([row("g", "General")], new Set())).toBeNull();
   });
 });
 

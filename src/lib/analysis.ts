@@ -39,6 +39,7 @@ export const FILING_RULES = `Filing rules ("we" and "our company" mean the compa
   - docKind: quotations, purchase_orders, delivery_notes, invoices, contracts, price_lists, payments (payments, receipts, remittances, statements of account), shipping (bills of lading, airway bills, packing lists, certificates of origin, customs papers), specifications (a customer's own specifications) or correspondence (anything else with them).
   - materialId, materialName, folderId: null.
 - placement "folder" for everything else: our own licences and GMP certificates, registration files, SOPs, employee records, our company documents, marketing material, bank statements. folderId is the id of the best folder from the company folders list; side, partyId, partyName, materialId, materialName and docKind are null.
+  - A document that has no place in any of the above goes in the General folder. Never force it into a folder, company or material it does not belong to.
 - confidence: 0 to 1. Above 0.9 when it clearly belongs there; 0.5 to 0.75 when two places are plausible; below 0.5 when unsure.
 - reason: one short English sentence a colleague would understand, for example "Invoice we issued to a customer".`;
 

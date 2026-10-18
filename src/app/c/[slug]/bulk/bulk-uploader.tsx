@@ -8,19 +8,23 @@ import { putToBucket, sha256Hex } from "@/components/upload-provider";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { AutoFileResult } from "@/app/c/[slug]/files/[id]/auto-file/route";
+import { Badge } from "@/components/ui/badge";
 import { formatBytes, isBlockedFile } from "@/lib/file-names";
+import { isZipName, zipEntries } from "@/lib/zip-entries";
 
 /**
  * Two lanes: files are hashed and uploaded two at a time, then handed one at a time to the AI
  * (the server reads one file per person at a time). Each file ends filed, left for Review,
  * skipped as a duplicate, or failed; the table is the report, and it can be downloaded as CSV.
+ * Zips are opened here and each document inside is handled like a file chosen on its own.
  */
 
 type Phase = "queued" | "hashing" | "uploading" | "finishing" | "waiting" | "reading" | "filed" | "review" | "duplicate" | "skipped" | "failed";
 
 type Item = {
   id: number;
-  file: File;
+  /** The file itself, or the document unpacked from its zip when its turn comes. */
+  load: () => Promise<File>;
   name: string;
   relPath: string;
   size: number;
@@ -31,7 +35,11 @@ type Item = {
   detail?: string;
   newParty?: string | null;
   confidence?: number;
+  /** Filed in General because the AI found no place for it. */
+  unsure?: boolean;
 };
+
+type Picked = { name: string; relPath: string; size: number; load: () => Promise<File>; problem?: string; note?: string };
 
 const UPLOAD_LANES = 2;
 const BUSY_WAIT_MS = 8_000;
@@ -53,30 +61,48 @@ async function readAndFile(slug: string, fileId: string, retry = false): Promise
 
 function csvOf(items: Item[]): string {
   const cell = (v: string | number | undefined | null) => `"${String(v ?? "").replaceAll('"', '""')}"`;
-  const rows = items.map((i) => [i.relPath, i.size, i.phase, i.detail, i.newParty ?? "", i.confidence === undefined ? "" : Math.round(i.confidence * 100), i.fileId ?? ""]);
-  return ["file,bytes,result,detail,new company,confidence %,id", ...rows.map((r) => r.map(cell).join(","))].join("\n");
+  const rows = items.map((i) => [i.relPath, i.size, i.phase, i.detail, i.newParty ?? "", i.confidence === undefined ? "" : Math.round(i.confidence * 100), i.unsure ? "yes" : "", i.fileId ?? ""]);
+  return ["file,bytes,result,detail,new company,confidence %,unsure,id", ...rows.map((r) => r.map(cell).join(","))].join("\n");
 }
 
-export function BulkUploader({ slug, maxMb, aiAvailable }: { slug: string; maxMb: number; aiAvailable: boolean }) {
+export function BulkUploader({ slug, maxMb, aiMaxMb, aiAvailable }: { slug: string; maxMb: number; aiMaxMb: number; aiAvailable: boolean }) {
   const [items, setItems] = useState<Item[]>([]);
   const [running, setRunning] = useState(false);
+  const [opening, setOpening] = useState(false);
   const nextId = useRef(1);
   const folderInput = useRef<HTMLInputElement>(null);
   const filesInput = useRef<HTMLInputElement>(null);
 
   const update = (id: number, patch: Partial<Item>) => setItems((prev) => prev.map((i) => (i.id === id ? { ...i, ...patch } : i)));
 
-  const add = (files: FileList | null) => {
-    if (!files) return;
+  const add = async (files: File[]) => {
     const added: Item[] = [];
-    for (const file of Array.from(files)) {
-      const relPath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
-      if (SYSTEM_FILES.test(file.name)) continue;
+    const push = (p: Picked) => {
+      if (SYSTEM_FILES.test(p.name)) return;
       const problem =
-        file.size === 0 ? "Empty file" : isBlockedFile(file.name, file.type) ? "This kind of file is not accepted" : file.size > maxMb * 1024 * 1024 ? `Larger than ${maxMb} MB` : null;
-      added.push({ id: nextId.current++, file, name: file.name, relPath, size: file.size, phase: problem ? "skipped" : "queued", progress: 0, detail: problem ?? undefined });
+        p.problem ??
+        (p.size === 0 ? "Empty file" : isBlockedFile(p.name, "") ? "This kind of file is not accepted" : p.size > maxMb * 1024 * 1024 ? `Larger than ${maxMb} MB` : null);
+      const note = p.note ?? (p.size > aiMaxMb * 1024 * 1024 ? `Over ${aiMaxMb} MB, so the AI does not read it: it will wait in Review` : undefined);
+      added.push({ id: nextId.current++, load: p.load, name: p.name, relPath: p.relPath, size: p.size, phase: problem ? "skipped" : "queued", progress: 0, detail: problem ?? note });
+    };
+    setOpening(true);
+    try {
+      for (const file of files) {
+        const relPath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+        const plain = { name: file.name, relPath, size: file.size, load: async () => file };
+        if (!isZipName(file.name) || SYSTEM_FILES.test(file.name)) {
+          push(plain);
+          continue;
+        }
+        const entries = await zipEntries(file, relPath);
+        if (!entries) push({ ...plain, note: "Could not be opened as a zip, so it is uploaded as it is" });
+        else if (entries.length === 0) push({ ...plain, problem: "The zip holds no files" });
+        else entries.forEach(push);
+      }
+    } finally {
+      setItems((prev) => [...prev, ...added]);
+      setOpening(false);
     }
-    setItems((prev) => [...prev, ...added]);
   };
 
   // Leaving the page would abandon what is still queued.
@@ -103,7 +129,8 @@ export function BulkUploader({ slug, maxMb, aiAvailable }: { slug: string; maxMb
         if ("error" in result) update(item.id, { phase: "review", detail: result.error });
         else if (result.status === "busy") update(item.id, { phase: "review", detail: "The AI was busy for too long; check it in Review." });
         else if (result.outcome.action === "filed") {
-          update(item.id, { phase: "filed", detail: result.outcome.path, newParty: result.outcome.newParty, confidence: result.outcome.confidence });
+          const { path, newParty, confidence, unsure } = result.outcome;
+          update(item.id, { phase: "filed", detail: path, newParty, confidence, unsure });
         } else update(item.id, { phase: "review", detail: result.outcome.reason });
       }
       aiRunning = false;
@@ -112,8 +139,9 @@ export function BulkUploader({ slug, maxMb, aiAvailable }: { slug: string; maxMb
     const uploadOne = async (item: Item) => {
       try {
         update(item.id, { phase: "hashing" });
-        const sha256 = await sha256Hex(item.file);
-        const started = await startUploadAction(slug, { name: item.name, size: item.size, mimeType: item.file.type, sha256, allowDuplicate: false });
+        const file = await item.load();
+        const sha256 = await sha256Hex(file);
+        const started = await startUploadAction(slug, { name: item.name, size: file.size, mimeType: file.type, sha256, allowDuplicate: false });
         if (!started.ok) return update(item.id, { phase: "failed", detail: started.error });
         if (started.data.kind === "duplicate") {
           const { existing } = started.data;
@@ -121,7 +149,7 @@ export function BulkUploader({ slug, maxMb, aiAvailable }: { slug: string; maxMb
         }
         const { fileId, versionNo, uploadUrl, contentType } = started.data;
         update(item.id, { phase: "uploading" });
-        await putToBucket(uploadUrl, item.file, contentType, (progress) => update(item.id, { progress }));
+        await putToBucket(uploadUrl, file, contentType, (progress) => update(item.id, { progress }));
         update(item.id, { phase: "finishing", progress: 1 });
         const done = await confirmUploadAction(slug, { fileId, versionNo });
         if (!done.ok) return update(item.id, { phase: "failed", detail: done.error });
@@ -149,6 +177,7 @@ export function BulkUploader({ slug, maxMb, aiAvailable }: { slug: string; maxMb
   const queued = count("queued");
   const finished = items.length > 0 && !running && items.every((i) => DONE.includes(i.phase));
   const newParties = [...new Set(items.flatMap((i) => (i.newParty ? [i.newParty] : [])))];
+  const unsure = items.filter((i) => i.unsure).length;
   const failedReads = items.filter((i) => i.phase === "review" && i.fileId && READ_FAILED.test(i.detail ?? ""));
 
   const download = () => {
@@ -161,8 +190,8 @@ export function BulkUploader({ slug, maxMb, aiAvailable }: { slug: string; maxMb
 
   return (
     <div className="grid gap-4">
-      <input ref={folderInput} type="file" className="hidden" multiple {...({ webkitdirectory: "" } as object)} onChange={(e) => (add(e.target.files), (e.target.value = ""))} />
-      <input ref={filesInput} type="file" className="hidden" multiple onChange={(e) => (add(e.target.files), (e.target.value = ""))} />
+      <input ref={folderInput} type="file" className="hidden" multiple {...({ webkitdirectory: "" } as object)} onChange={(e) => (void add(Array.from(e.target.files ?? [])), (e.target.value = ""))} />
+      <input ref={filesInput} type="file" className="hidden" multiple onChange={(e) => (void add(Array.from(e.target.files ?? [])), (e.target.value = ""))} />
 
       {!aiAvailable && (
         <p role="alert" className="text-destructive text-sm">
@@ -171,19 +200,19 @@ export function BulkUploader({ slug, maxMb, aiAvailable }: { slug: string; maxMb
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="outline" onClick={() => folderInput.current?.click()} disabled={running}>
+        <Button variant="outline" onClick={() => folderInput.current?.click()} disabled={running || opening}>
           <FolderUp />
           Choose a folder
         </Button>
-        <Button variant="outline" onClick={() => filesInput.current?.click()} disabled={running}>
+        <Button variant="outline" onClick={() => filesInput.current?.click()} disabled={running || opening}>
           <Upload />
           Choose files
         </Button>
-        <Button onClick={() => void start()} disabled={running || queued === 0 || !aiAvailable}>
-          {running ? <Loader2 className="animate-spin" /> : <Sparkles />}
-          {running ? "Working…" : queued ? `Upload and file ${queued} ${queued === 1 ? "file" : "files"}` : "Upload and file"}
+        <Button onClick={() => void start()} disabled={running || opening || queued === 0 || !aiAvailable}>
+          {running || opening ? <Loader2 className="animate-spin" /> : <Sparkles />}
+          {opening ? "Opening zips…" : running ? "Working…" : queued ? `Upload and file ${queued} ${queued === 1 ? "file" : "files"}` : "Upload and file"}
         </Button>
-        {items.length > 0 && !running && (
+        {items.length > 0 && !running && !opening && (
           <Button variant="ghost" onClick={() => setItems([])}>
             Clear
           </Button>
@@ -196,6 +225,11 @@ export function BulkUploader({ slug, maxMb, aiAvailable }: { slug: string; maxMb
             <span>
               <strong>{count("filed")}</strong> filed
             </span>
+            {unsure > 0 && (
+              <span>
+                <strong>{unsure}</strong> in General, unsure
+              </span>
+            )}
             <span>
               <strong>{count("review")}</strong> for review
             </span>
@@ -268,6 +302,11 @@ export function BulkUploader({ slug, maxMb, aiAvailable }: { slug: string; maxMb
                       <span dir="auto">{item.detail}</span>
                     )}
                     {item.newParty && <span className="ml-1 text-xs">(new: {item.newParty})</span>}
+                    {item.unsure && (
+                      <Badge variant="outline" className="ml-1.5">
+                        Unsure
+                      </Badge>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
@@ -278,8 +317,8 @@ export function BulkUploader({ slug, maxMb, aiAvailable }: { slug: string; maxMb
 
       {items.length === 0 && (
         <p className="text-muted-foreground rounded-lg border border-dashed p-10 text-center text-sm">
-          Choose a folder (all its files, subfolders included) or a set of files. Nothing is sent until you press Upload and file. {formatBytes(maxMb * 1024 * 1024)} per
-          file at most.
+          Choose a folder (all its files, subfolders included) or a set of files. Zips are opened and each file inside is filed on its own. Nothing is sent until you
+          press Upload and file. {formatBytes(maxMb * 1024 * 1024)} per file at most; files over {aiMaxMb} MB are uploaded but wait in Review.
         </p>
       )}
     </div>

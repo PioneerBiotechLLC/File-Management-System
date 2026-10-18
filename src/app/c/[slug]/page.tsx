@@ -161,8 +161,15 @@ export default async function CompanyHome({ params, searchParams }: { params: Pr
                       <Link href={`/c/${slug}/files/${f.id}`} className="flex items-start gap-2">
                         <FileIcon name={f.name} mimeType={f.mimeType} className="text-muted-foreground mt-0.5 size-4 shrink-0" />
                         <span className="min-w-0">
-                          <span dir="auto" className="block truncate font-medium hover:underline">
-                            {f.name}
+                          <span className="flex items-center gap-1.5">
+                            <span dir="auto" className="truncate font-medium hover:underline">
+                              {f.name}
+                            </span>
+                            {f.unsure && (
+                              <Badge variant="outline" title="The AI found no place for this file in the tree. Move it to where it belongs.">
+                                Unsure
+                              </Badge>
+                            )}
                           </span>
                           {(f.title || f.summary) && (
                             <span dir="auto" className="text-muted-foreground block truncate text-xs">

@@ -295,6 +295,8 @@ model StoredFile {
   filingConfidence    Float?
   /// One short sentence shown to the user.
   filingReason        String?
+  /// Filed in General by the AI because it found no place for the file in the tree; cleared when the file is moved.
+  unsure              Boolean         @default(false)
   /// The email of the user whose choice placed the file.
   filedBy             String?
   aiModel             String?

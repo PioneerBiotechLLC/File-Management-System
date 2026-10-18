@@ -88,6 +88,7 @@ const LIST_SELECT = {
   docType: true,
   folderId: true,
   status: true,
+  unsure: true,
   createdAt: true,
   uploadedBy: true,
   uploader: { select: { name: true, email: true } },
@@ -132,6 +133,7 @@ const DETAIL_SELECT = {
   facts: true,
   tags: true,
   filedBy: true,
+  unsure: true,
   readStatus: true,
   aiModel: true,
   aiError: true,
@@ -546,7 +548,8 @@ export async function moveFile(prisma: Db, ctx: FileContext, input: { fileId: st
   await prisma.$transaction([
     prisma.storedFile.update({
       where: { id: file.id },
-      data: { folderId: input.folderId, partyId, materialId, status: "ready", filedBy: ctx.email, processingStartedAt: null },
+      // A file someone has moved has a place now, even if that is General again.
+      data: { folderId: input.folderId, partyId, materialId, status: "ready", filedBy: ctx.email, processingStartedAt: null, unsure: false },
     }),
     prisma.auditLog.create({
       data: {

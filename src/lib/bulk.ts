@@ -1,20 +1,53 @@
 import type { Db } from "@/lib/db";
 import { UserError } from "@/lib/errors";
 import type { FileContext } from "@/lib/files";
+import type { Destination, FilingSuggestion } from "@/lib/file-kinds";
+import { generalFolderId } from "@/lib/folders";
 import { fileTo, yearChoice, listMaterials, listParties, suggestionFor } from "@/lib/parties";
 import { reindexFile } from "@/lib/search-index";
 
 /**
  * Bulk upload: an admin's files are filed straight after the AI reads them, with no one
- * confirming. A file is filed only when the AI read it, named somewhere it can go, and was at
- * least AUTO_FILE_THRESHOLD sure; otherwise it waits in Review like any other upload.
+ * confirming. A file is filed only when the AI read it and was at least AUTO_FILE_THRESHOLD sure;
+ * otherwise it waits in Review like any other upload. A file the AI is sure about but that has no
+ * place in the tree goes to General, marked unsure.
  */
 
 export const AUTO_FILE_THRESHOLD = 0.5;
 
 export type BulkOutcome =
-  | { action: "filed"; path: string; confidence: number; newParty: string | null }
+  | { action: "filed"; path: string; confidence: number; newParty: string | null; unsure: boolean }
   | { action: "review"; reason: string };
+
+/**
+ * Where the AI's answer files a file with no one confirming, or why it waits. Below the threshold
+ * it waits; sure, but naming no place in the tree, it goes to General when `general` allows.
+ */
+export function autoFileTarget(
+  suggestion: FilingSuggestion | null,
+  storedConfidence: number | null,
+  ctx: Pick<FileContext, "folders" | "writable" | "paths">,
+  opts: { threshold: number; general: boolean },
+): FilingSuggestion | { wait: string } {
+  const confidence = suggestion?.confidence ?? storedConfidence ?? 0;
+  const percent = Math.round(confidence * 100);
+  if (confidence < opts.threshold) {
+    return { wait: suggestion ? `The AI was only ${percent}% sure it belongs in ${suggestion.path}.` : `The AI could not tell where it belongs (${percent}% sure).` };
+  }
+  if (suggestion) return suggestion;
+  const general = opts.general ? generalFolderId(ctx.folders, ctx.writable) : null;
+  if (!general) return { wait: opts.general ? "The AI found no place for it, and there is no General folder to put it in." : "The AI could not tell where it belongs." };
+  const destination = { kind: "folder", folderId: general } as const;
+  return { destination, path: ctx.paths.get(general) ?? "General", newParty: false, newMaterial: false, seenAs: null, confidence, reason: "No place in the tree" };
+}
+
+/** Files a file where the AI chose, marking it unsure when that is General. Returns whether it was. */
+export async function fileByAi(prisma: Db, ctx: FileContext, input: { fileId: string; destination: Destination; seenAs?: string | null }): Promise<boolean> {
+  const { folderId } = await fileTo(prisma, ctx, input);
+  const unsure = folderId === generalFolderId(ctx.folders, ctx.writable);
+  if (unsure) await prisma.storedFile.update({ where: { id: input.fileId }, data: { unsure: true } });
+  return unsure;
+}
 
 export async function autoFileAfterRead(
   prisma: Db,
@@ -55,10 +88,8 @@ export async function autoFileAfterRead(
     year,
     materials,
   );
-  if (!suggestion) return { action: "review", reason: "The AI could not tell where it belongs." };
-  if (suggestion.confidence < AUTO_FILE_THRESHOLD) {
-    return { action: "review", reason: `The AI was only ${Math.round(suggestion.confidence * 100)}% sure it belongs in ${suggestion.path}.` };
-  }
+  const target = autoFileTarget(suggestion, file.filingConfidence, ctx, { threshold: AUTO_FILE_THRESHOLD, general: true });
+  if ("wait" in target) return { action: "review", reason: target.wait };
 
   // The summary stands as the AI wrote it; the log says so.
   await prisma.$transaction([
@@ -68,11 +99,12 @@ export async function autoFileAfterRead(
     }),
   ]);
   await reindexFile(prisma, file.id);
-  await fileTo(prisma, ctx, { fileId: file.id, destination: suggestion.destination, seenAs: suggestion.seenAs });
+  const unsure = await fileByAi(prisma, ctx, { fileId: file.id, destination: target.destination, seenAs: target.seenAs });
   return {
     action: "filed",
-    path: suggestion.path,
-    confidence: suggestion.confidence,
-    newParty: suggestion.newParty && suggestion.destination.kind !== "folder" ? suggestion.destination.partyName : null,
+    path: target.path,
+    confidence: target.confidence,
+    newParty: target.newParty && target.destination.kind !== "folder" ? target.destination.partyName : null,
+    unsure,
   };
 }

@@ -43,6 +43,8 @@ export type SearchHit = {
   sizeBytes: number;
   folderId: string | null;
   folderPath: string | null;
+  /** Filed in General by the AI because it found no place for it. */
+  unsure: boolean;
   title: string | null;
   summary: string | null;
   /** The matching part of the title and summary, matches marked with « ». */
@@ -60,6 +62,7 @@ type Row = {
   mimeType: string;
   sizeBytes: number;
   folderId: string | null;
+  unsure: boolean;
   title: string | null;
   summary: string | null;
   snippet: string | null;
@@ -109,7 +112,7 @@ function accessSql(ctx: FileContext, filters: z.output<typeof searchFilters>): P
   return Prisma.join(parts, " AND ");
 }
 
-const COLUMNS = Prisma.sql`f."id", f."name", f."mimeType", f."sizeBytes", f."folderId", f."title", f."summary", f."docType", f."docDate", f."createdAt", f."facts", u."name" AS "uploaderName", u."email" AS "uploaderEmail"`;
+const COLUMNS = Prisma.sql`f."id", f."name", f."mimeType", f."sizeBytes", f."folderId", f."unsure", f."title", f."summary", f."docType", f."docDate", f."createdAt", f."facts", u."name" AS "uploaderName", u."email" AS "uploaderEmail"`;
 
 function toHit(ctx: FileContext, row: Row): SearchHit {
   return {
@@ -119,6 +122,7 @@ function toHit(ctx: FileContext, row: Row): SearchHit {
     sizeBytes: row.sizeBytes,
     folderId: row.folderId,
     folderPath: row.folderId ? (ctx.paths.get(row.folderId) ?? null) : null,
+    unsure: row.unsure,
     title: row.title,
     summary: row.summary,
     snippet: row.snippet?.trim() || [row.title, row.summary].filter(Boolean).join(". ").slice(0, 300),

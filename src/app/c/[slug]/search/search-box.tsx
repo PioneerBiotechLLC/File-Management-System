@@ -66,6 +66,7 @@ function Hit({ slug, hit, why, timezone }: { slug: string; hit: SearchHit; why?:
       </div>
       {why ? <p dir="auto" className="text-sm">{why}</p> : <Snippet text={hit.snippet} />}
       <div className="flex flex-wrap gap-1.5">
+        {hit.unsure && <Badge variant="outline">Unsure</Badge>}
         {hit.docType && <Badge variant="secondary">{DOC_TYPE_LABELS[hit.docType as DocType] ?? hit.docType}</Badge>}
         {hit.facts.parties.slice(0, 2).map((p) => (
           <Badge key={p} variant="outline" dir="auto">

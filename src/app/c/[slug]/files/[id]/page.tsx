@@ -107,6 +107,11 @@ export default async function FilePage({ params }: { params: Promise<{ slug: str
                 <Badge variant="outline">Waiting in Review</Badge>
               </Link>
             )}
+            {file.unsure && (
+              <Badge variant="outline" title="The AI found no place for this file in the tree. Moving it clears this.">
+                Unsure
+              </Badge>
+            )}
             {file.folderId && ctx.restricted.has(file.folderId) && (
               <Badge variant="secondary">
                 <Lock /> Restricted

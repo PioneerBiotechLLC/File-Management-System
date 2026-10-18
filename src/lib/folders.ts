@@ -229,6 +229,21 @@ export function folderPaths(folders: Pick<FolderNode, "id" | "parentId" | "name"
   return paths;
 }
 
+/**
+ * The top-level General folder (or عام), where the AI puts what has no place in the tree, if the
+ * user can file into it. Found by name, so renaming it switches that off.
+ */
+export function generalFolderId(
+  folders: (Pick<FolderNode, "id" | "parentId" | "name" | "isActive"> & { nameAr: string | null; kind: string })[],
+  writable: Set<string>,
+): string | null {
+  const general = DEFAULT_FOLDERS.find((f) => f.name === "General")!;
+  const folder = folders.find(
+    (f) => f.parentId === null && f.kind === "regular" && f.isActive && (f.name.trim().toLowerCase() === general.name.toLowerCase() || f.nameAr?.trim() === general.nameAr),
+  );
+  return folder && writable.has(folder.id) ? folder.id : null;
+}
+
 /** Loads the company's folders and the user's grants, then applies `folderAccess`. */
 export async function loadFolderAccess(prisma: Db, orgId: string, userId: string, role: Role) {
   const [folders, grants] = await Promise.all([

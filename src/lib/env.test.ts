@@ -18,7 +18,7 @@ describe("environment", () => {
     vi.stubEnv("ANTHROPIC_MODEL", "");
     expect(aiEnv()).toMatchObject({ ANTHROPIC_MODEL: "claude-sonnet-5-5", ANTHROPIC_MODEL_LIGHT: "claude-haiku-5-5", AI_MAX_CALLS_PER_DAY: 500 });
     expect(limitsEnv()).toMatchObject({
-      FILES_MAX_MB: 100,
+      FILES_MAX_MB: 1900,
       FILES_AI_MAX_MB: 22,
       FILES_AI_SEARCHES_PER_USER_PER_DAY: 50,
       AI_DAILY_USD: 10,

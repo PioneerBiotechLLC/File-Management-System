@@ -49,6 +49,32 @@ export function normalizeMimeType(raw: string): string {
   return /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/.test(type) ? type : "application/octet-stream";
 }
 
+const TYPES_BY_EXTENSION: Record<string, string> = {
+  pdf: "application/pdf",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  tif: "image/tiff",
+  tiff: "image/tiff",
+  txt: "text/plain",
+  csv: "text/csv",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  msg: "application/vnd.ms-outlook",
+  eml: "message/rfc822",
+};
+
+/** The type a browser would give a picked file, for files that come with none (those taken out of a zip). */
+export function mimeTypeFromName(name: string): string {
+  return TYPES_BY_EXTENSION[extensionOf(name)] ?? "application/octet-stream";
+}
+
 /** Types a browser can show inline. The type is forced on the preview URL, so a wrong claim cannot become HTML. */
 type PreviewKind = "pdf" | "image";
 
