@@ -1,7 +1,12 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import ExcelJS from "exceljs";
 import mammoth from "mammoth";
-import { declaredCharset, htmlToText } from "@/lib/html-text";
+import WordExtractor from "word-extractor";
+import { TextWriter, Uint8ArrayReader, ZipReader, configure } from "@zip.js/zip.js";
+import { declaredCharset, decodeEntities, htmlToText } from "@/lib/html-text";
+
+// No workers on the server; the slides of a .pptx are small and inflate in-process.
+configure({ useWebWorkers: false });
 
 /**
  * Turns an uploaded file into something Claude can read, in memory only: nothing produced here is
@@ -36,7 +41,10 @@ type FileKind =
   | { kind: "pdf" }
   | { kind: "image"; mediaType: ImageMediaType }
   | { kind: "word" }
+  /** Word 97–2003 (.doc), the binary format mammoth cannot read. */
+  | { kind: "word97" }
   | { kind: "spreadsheet" }
+  | { kind: "presentation" }
   | { kind: "text" }
   /** A web page or an email saved as HTML: read as text once the markup is stripped. */
   | { kind: "html" }
@@ -50,7 +58,16 @@ export type Extraction =
 const TEXT_EXTENSIONS = new Set(["txt", "csv", "tsv", "md", "markdown", "json", "xml", "log", "ini", "yaml", "yml"]);
 const HTML_EXTENSIONS = new Set(["html", "htm", "xhtml"]);
 const WORD_EXTENSIONS = new Set(["docx", "docm"]);
+/** .wbk is Word's automatic backup copy of a .doc, in the same format. */
+const WORD97_EXTENSIONS = new Set(["doc", "dot", "wbk"]);
 const SPREADSHEET_EXTENSIONS = new Set(["xlsx", "xlsm"]);
+const PRESENTATION_EXTENSIONS = new Set(["pptx", "pptm", "ppsx"]);
+const PRESENTATION_MIMES = new Set([
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+]);
+/** Slides read from a deck; a longer one is read in part. */
+const SLIDES_MAX = 200;
 const WORD_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const SPREADSHEET_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
@@ -80,6 +97,8 @@ function isPdf(bytes: Uint8Array): boolean {
 }
 
 const isZip = (bytes: Uint8Array) => startsWith(bytes, [0x50, 0x4b, 0x03, 0x04]);
+/** The OLE container of Office 97–2003 files (.doc, .xls, .ppt). */
+const isOle = (bytes: Uint8Array) => startsWith(bytes, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
 
 /**
  * What a zip archive would unpack to, read from its central directory without inflating anything.
@@ -144,8 +163,10 @@ export function detectFileKind(bytes: Uint8Array, name: string, mimeType: string
   if (isZip(bytes)) {
     if (WORD_EXTENSIONS.has(ext) || mime === WORD_MIME) return { kind: "word" };
     if (SPREADSHEET_EXTENSIONS.has(ext) || mime === SPREADSHEET_MIME) return { kind: "spreadsheet" };
+    if (PRESENTATION_EXTENSIONS.has(ext) || PRESENTATION_MIMES.has(mime)) return { kind: "presentation" };
     return { kind: "other", label: ext || "zip" };
   }
+  if (isOle(bytes)) return WORD97_EXTENSIONS.has(ext) || mime === "application/msword" ? { kind: "word97" } : { kind: "other", label: ext || "ole" };
   if (looksBinary(bytes)) return { kind: "other", label: ext || mime || "unknown" };
   if (HTML_EXTENSIONS.has(ext) || mime === "text/html" || mime === "application/xhtml+xml" || looksHtml(bytes)) return { kind: "html" };
   const textual =
@@ -220,6 +241,28 @@ async function spreadsheetText(bytes: Uint8Array): Promise<{ text: string; trunc
   return { text: sheets.join("\n\n"), truncated };
 }
 
+/** The text of each slide, in order: paragraphs are `<a:p>`, their text runs `<a:t>`. */
+async function presentationText(bytes: Uint8Array): Promise<{ text: string; truncated: boolean }> {
+  const reader = new ZipReader(new Uint8ArrayReader(bytes));
+  try {
+    const number = (name: string) => Number(name.match(/slide(\d+)\.xml$/)?.[1] ?? 0);
+    const slides = (await reader.getEntries())
+      .filter((e): e is Extract<typeof e, { directory: false }> => !e.directory && /^ppt\/slides\/slide\d+\.xml$/.test(e.filename))
+      .sort((a, b) => number(a.filename) - number(b.filename));
+    const parts: string[] = [];
+    for (const slide of slides.slice(0, SLIDES_MAX)) {
+      const xml = await slide.getData(new TextWriter());
+      const paragraphs = [...xml.matchAll(/<a:p\b[\s\S]*?<\/a:p>/g)]
+        .map((p) => decodeEntities([...p[0].matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)].map((t) => t[1]).join("")).trim())
+        .filter(Boolean);
+      parts.push(`## Slide ${number(slide.filename)}\n${paragraphs.join("\n")}`);
+    }
+    return { text: parts.join("\n\n"), truncated: slides.length > SLIDES_MAX };
+  } finally {
+    await reader.close();
+  }
+}
+
 function unreadable(reason: string): Extraction {
   return { kind: "unreadable", readStatus: "not_read", reason };
 }
@@ -254,6 +297,30 @@ export async function extract(bytes: Uint8Array, name: string, mimeType: string)
         return { kind: "text", ...capText(value) };
       } catch {
         return unreadable("Word file could not be opened (damaged or password-protected)");
+      }
+    }
+    case "word97": {
+      if (bytes.length > OFFICE_MAX_BYTES) return unreadable(`Word file is larger than ${mb(OFFICE_MAX_BYTES)}`);
+      try {
+        const doc = await withTimeout(new WordExtractor().extract(Buffer.from(bytes)), OFFICE_PARSE_TIMEOUT_MS);
+        // Forms are often laid out in text boxes, which are not part of the body.
+        const text = doc.getBody().trim() || doc.getTextboxes().trim();
+        if (!text) return unreadable("Word file has no text");
+        return { kind: "text", ...capText(text) };
+      } catch {
+        return unreadable("Word file could not be opened (damaged or password-protected)");
+      }
+    }
+    case "presentation": {
+      const tooBig = officeTooBig(bytes, "Presentation");
+      if (tooBig) return tooBig;
+      try {
+        const { text, truncated } = await withTimeout(presentationText(bytes), OFFICE_PARSE_TIMEOUT_MS);
+        if (!text.replace(/## Slide \d+\n?/g, "").trim()) return unreadable("Presentation has no text");
+        const capped = capText(text);
+        return { kind: "text", text: capped.text, readStatus: truncated ? "partial" : capped.readStatus };
+      } catch {
+        return unreadable("Presentation could not be opened (damaged or password-protected)");
       }
     }
     case "spreadsheet": {

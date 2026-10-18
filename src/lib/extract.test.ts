@@ -92,7 +92,8 @@ describe("detectFileKind", () => {
       kind: "spreadsheet",
     });
     expect(detectFileKind(z, "archive.zip", "application/zip")).toEqual({ kind: "other", label: "zip" });
-    expect(detectFileKind(z, "deck.pptx", "")).toEqual({ kind: "other", label: "pptx" });
+    expect(detectFileKind(z, "deck.pptx", "")).toEqual({ kind: "presentation" });
+    expect(detectFileKind(z, "upload", "application/vnd.openxmlformats-officedocument.presentationml.presentation")).toEqual({ kind: "presentation" });
   });
 
   it("recognises text by extension or type, but not binary content", () => {
@@ -108,7 +109,11 @@ describe("detectFileKind", () => {
 
   it("leaves everything else unread", () => {
     expect(detectFileKind(bytes("MZ\x90\x00"), "video.mp4", "video/mp4")).toEqual({ kind: "other", label: "mp4" });
-    expect(detectFileKind(bytes("\xd0\xcf\x11\xe0"), "old.doc", "application/msword")).toEqual({ kind: "other", label: "doc" });
+    const ole = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0]);
+    expect(detectFileKind(ole, "old.doc", "application/msword")).toEqual({ kind: "word97" });
+    expect(detectFileKind(ole, "Backup of old.wbk", "")).toEqual({ kind: "word97" });
+    expect(detectFileKind(ole, "old.xls", "application/vnd.ms-excel")).toEqual({ kind: "other", label: "xls" });
+    expect(detectFileKind(bytes("\xd0\xcf\x11\xe0"), "cut.doc", "application/msword")).toEqual({ kind: "other", label: "doc" });
   });
 });
 
@@ -211,6 +216,20 @@ describe("extract", () => {
     }
     view.setUint32(view.getUint32(end + 16, true) + 24, 3_000_000_000, true);
     expect(await extract(bomb, "bomb.docx", "")).toMatchObject({ kind: "unreadable", reason: expect.stringContaining("unpacks to more than") });
+  });
+
+  it("reads the text of each slide in a presentation", async () => {
+    const slide = (...paras: string[]) => `<p:sld>${paras.map((t) => `<a:p><a:r><a:t>${t}</a:t></a:r></a:p>`).join("")}</p:sld>`;
+    const deck = zip({ "ppt/slides/slide2.xml": slide("Prices &amp; terms", "عرض سعر"), "ppt/slides/slide1.xml": slide("API Pharma", "Company profile"), "ppt/slides/_rels/slide1.xml.rels": "x" });
+    const out = await extract(deck, "profile.pptx", "");
+    expect(out).toMatchObject({ kind: "text", readStatus: "full" });
+    expect(out.kind === "text" && out.text).toBe("## Slide 1\nAPI Pharma\nCompany profile\n\n## Slide 2\nPrices & terms\nعرض سعر");
+    expect(await extract(zip({ "ppt/slides/slide1.xml": "<p:sld/>" }), "empty.pptx", "")).toMatchObject({ kind: "unreadable", reason: "Presentation has no text" });
+  });
+
+  it("stores a damaged Word 97 file without reading it", async () => {
+    const ole = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0, 0, 0]);
+    expect(await extract(ole, "broken.doc", "application/msword")).toMatchObject({ kind: "unreadable", reason: expect.stringContaining("could not be opened") });
   });
 
   it("stores damaged Office files without reading them", async () => {

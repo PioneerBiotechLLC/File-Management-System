@@ -46,6 +46,8 @@ const BUSY_WAIT_MS = 8_000;
 const BUSY_RETRIES = 30;
 const DONE: Phase[] = ["filed", "review", "duplicate", "skipped", "failed"];
 const SYSTEM_FILES = /^(\.DS_Store|Thumbs\.db|desktop\.ini|~\$.*|\._.*)$/;
+/** Word's backup and auto-recovery copies: the real document is beside them, and would otherwise be skipped as their duplicate. */
+const BACKUP_FILES = /\.(wbk|asd|bak|tmp)$/i;
 
 const READ_FAILED = /AI reading failed|did not read it|busy for too long|AI step failed/;
 
@@ -81,7 +83,7 @@ export function BulkUploader({ slug, maxMb, aiMaxMb, aiAvailable }: { slug: stri
       if (SYSTEM_FILES.test(p.name)) return;
       const problem =
         p.problem ??
-        (p.size === 0 ? "Empty file" : isBlockedFile(p.name, "") ? "This kind of file is not accepted" : p.size > maxMb * 1024 * 1024 ? `Larger than ${maxMb} MB` : null);
+        (BACKUP_FILES.test(p.name) ? "Backup or temporary copy" : p.size === 0 ? "Empty file" : isBlockedFile(p.name, "") ? "This kind of file is not accepted" : p.size > maxMb * 1024 * 1024 ? `Larger than ${maxMb} MB` : null);
       const note = p.note ?? (p.size > aiMaxMb * 1024 * 1024 ? `Over ${aiMaxMb} MB, so the AI does not read it: it will wait in Review` : undefined);
       added.push({ id: nextId.current++, load: p.load, name: p.name, relPath: p.relPath, size: p.size, phase: problem ? "skipped" : "queued", progress: 0, detail: problem ?? note });
     };

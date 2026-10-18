@@ -42,7 +42,7 @@ const SECURITY_HEADERS = [
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   // Packages that must run as plain Node modules on the server, not bundled.
-  serverExternalPackages: ["@prisma/client", "pg", "mammoth", "exceljs"],
+  serverExternalPackages: ["@prisma/client", "pg", "mammoth", "exceljs", "word-extractor"],
   headers: async () => [{ source: "/(.*)", headers: SECURITY_HEADERS }],
 };
 
