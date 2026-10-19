@@ -13,7 +13,7 @@ import { reindexFile } from "@/lib/search-index";
  * place in the tree goes to General, marked unsure.
  */
 
-export const AUTO_FILE_THRESHOLD = 0.5;
+export const AUTO_FILE_THRESHOLD = 0.6;
 
 export type BulkOutcome =
   | { action: "filed"; path: string; confidence: number; newParty: string | null; unsure: boolean }

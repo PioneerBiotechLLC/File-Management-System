@@ -17,7 +17,7 @@ export default async function BulkUploadPage({ params }: { params: Promise<{ slu
         <h1 className="text-xl font-semibold">Bulk upload</h1>
         <p className="text-muted-foreground mt-1 max-w-3xl text-sm">
           Choose a folder or a set of files; zips are opened. Each file is uploaded, read by the AI and filed straight away, with no confirmation. Files the AI
-          could not read, was less than 50% sure about, or that are over {limitsEnv().FILES_AI_MAX_MB} MB are left in Review. Files that have no place in the
+          could not read, was less than 60% sure about, or that are over {limitsEnv().FILES_AI_MAX_MB} MB are left in Review. Files that have no place in the
           tree go to General, marked unsure. Keep this tab open until the report appears.
         </p>
       </div>

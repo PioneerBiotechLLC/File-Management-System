@@ -96,8 +96,8 @@ describe.skipIf(!TEST_DATABASE_URL)("bulk upload: filing without confirmation (d
     analyzeFile.mockReset();
   });
 
-  it("files what the AI is at least 50% sure about where it said, and nothing is unsure", async () => {
-    const fileId = await uploadAndRead("quote.pdf", folderFiling(folder["Sales/Quotations"]!, 0.5));
+  it("files what the AI is at least 60% sure about where it said, and nothing is unsure", async () => {
+    const fileId = await uploadAndRead("quote.pdf", folderFiling(folder["Sales/Quotations"]!, 0.6));
     expect(await autoFileAfterRead(prisma, await ctx(), company, fileId)).toMatchObject({ action: "filed", path: "Sales / Quotations", unsure: false });
     expect(await fileRow(fileId)).toMatchObject({ folderId: folder["Sales/Quotations"], status: "ready", unsure: false });
     // Filing also leaves the facts CSV beside the file in the bucket, with where it went.
@@ -107,9 +107,9 @@ describe.skipIf(!TEST_DATABASE_URL)("bulk upload: filing without confirmation (d
     expect(csv).toContain(",Sales / Quotations,");
   });
 
-  it("leaves anything under 50% in Review, wherever the AI thought it went", async () => {
-    const fileId = await uploadAndRead("maybe.pdf", folderFiling(folder.General!, 0.49));
-    expect(await autoFileAfterRead(prisma, await ctx(), company, fileId)).toEqual({ action: "review", reason: "The AI was only 49% sure it belongs in General." });
+  it("leaves anything under 60% in Review, wherever the AI thought it went", async () => {
+    const fileId = await uploadAndRead("maybe.pdf", folderFiling(folder.General!, 0.59));
+    expect(await autoFileAfterRead(prisma, await ctx(), company, fileId)).toEqual({ action: "review", reason: "The AI was only 59% sure it belongs in General." });
     expect(await fileRow(fileId)).toMatchObject({ folderId: null, status: "needs_review", unsure: false });
     expect((await files.listUnfiled(prisma, await ctx())).map((f) => f.id)).toContain(fileId);
   });

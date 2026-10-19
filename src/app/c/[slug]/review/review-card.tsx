@@ -351,7 +351,7 @@ function FolderStep({
             The AI suggests <span className="font-medium">{suggestion.path}</span>
             {suggestion.newParty && <> (a new {suggestion.destination.kind === "trading" ? SIDE_FOLDERS[suggestion.destination.side].label.toLowerCase() : "folder"})</>}
             {suggestion.reason && <>: {suggestion.reason}</>}
-            {suggestion.confidence < 0.5 && <> (it is not sure)</>}. Change it if that is wrong.
+            {suggestion.confidence < 0.6 && <> (it is not sure)</>}. Change it if that is wrong.
           </span>
         </p>
       ) : (
