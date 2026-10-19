@@ -60,6 +60,8 @@ enum FolderKind {
   tech_party
   material
   tech_doc
+  /// Under Projects: kept as uploaded, with the uploader's own subfolders. The AI never files into these.
+  project
 }
 
 model Organization {

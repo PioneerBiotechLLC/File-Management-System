@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { FileIcon } from "@/components/file-icon";
 import { FolderDrawer } from "@/components/folder-drawer";
 import { FolderTree } from "@/components/folder-tree";
+import { hiddenProjectFolder, projectLevels } from "@/lib/projects";
 import { TradingFilters } from "@/components/trading-filters";
 import { UploadButton } from "@/components/upload-buttons";
 import { Badge } from "@/components/ui/badge";
@@ -51,10 +52,15 @@ export default async function CompanyHome({ params, searchParams }: { params: Pr
   const dir = query.dir === "asc" || query.dir === "desc" ? query.dir : undefined;
   const result = await listFiles(prisma, ctx, { folderId, folderIds: browsing ? browse!.folderIds : undefined, sort, dir, page: Number(query.page) || 1 });
 
-  const treeFolders = ctx.folders.filter((f) => ctx.visible.has(f.id) && f.isActive);
+  const visibleFolders = ctx.folders.filter((f) => ctx.visible.has(f.id) && f.isActive);
+  // A project's own subfolders stay out of the sidebar (there can be thousands); the open folder's path is kept.
+  const levels = projectLevels(ctx.folders);
+  const openPath = new Set<string>();
+  for (let f = folder; f && !openPath.has(f.id); f = f.parentId ? ctx.folders.find((p) => p.id === f!.parentId) : undefined) openPath.add(f.id);
+  const treeFolders = visibleFolders.filter((f) => !hiddenProjectFolder(levels, f.id) || openPath.has(f.id));
   const crumbs: { id: string; name: string }[] = [];
   for (let f = folder; f && crumbs.length < 10; f = f.parentId ? ctx.folders.find((p) => p.id === f!.parentId) : undefined) crumbs.unshift(f);
-  const children = folder ? treeFolders.filter((f) => f.parentId === folder.id) : [];
+  const children = folder ? visibleFolders.filter((f) => f.parentId === folder.id) : [];
 
   const effectiveSort = sort ?? "createdAt";
   const effectiveDir = dir ?? (effectiveSort === "name" ? "asc" : "desc");

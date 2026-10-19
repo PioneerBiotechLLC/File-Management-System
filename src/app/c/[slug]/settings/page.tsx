@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { listGrants } from "@/lib/folder-admin";
 import { folderPaths } from "@/lib/folders";
 import { can } from "@/lib/permissions";
+import { hiddenProjectFolder, projectLevels } from "@/lib/projects";
 import { companyContext } from "@/lib/session";
 import { listMembers } from "@/lib/users";
 import { FolderSettings, type FolderRow } from "./folder-settings";
@@ -21,18 +22,20 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
     listMembers(prisma, org.id),
     prisma.folder.findMany({
       where: { orgId: org.id },
-      select: { id: true, parentId: true, name: true, nameAr: true, description: true, access: true, isActive: true, sortOrder: true },
+      select: { id: true, parentId: true, name: true, nameAr: true, description: true, access: true, isActive: true, sortOrder: true, kind: true },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
     }),
   ]);
   const paths = folderPaths(rawFolders);
+  // Projects are listed down to each project: access set there covers everything inside.
+  const levels = projectLevels(rawFolders);
   const grants = new Map(
     await Promise.all(rawFolders.filter((f) => f.access === "restricted").map(async (f) => [f.id, await listGrants(prisma, org.id, f.id)] as const)),
   );
   // Tree order, so children follow their parent.
   const folders: FolderRow[] = [];
   const walk = (parentId: string | null, depth: number) => {
-    for (const f of rawFolders.filter((r) => r.parentId === parentId)) {
+    for (const f of rawFolders.filter((r) => r.parentId === parentId && !hiddenProjectFolder(levels, r.id))) {
       folders.push({
         ...f,
         depth,

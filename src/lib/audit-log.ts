@@ -218,6 +218,10 @@ export function describeEntry(entry: Entry, lookups: Lookups): LogPart[] {
       return [`Added the material ${text(after.name) ?? ""} from ${text(after.supplier) ?? "a supplier"}`];
     case "folder.create":
       return ["Created the folder ", target];
+    case "folder.import": {
+      const created = typeof after.created === "number" ? after.created : 0;
+      return [`Created ${created} project ${created === 1 ? "folder" : "folders"} under `, target];
+    }
     case "folder.update":
       return [text(before.name) && before.name !== after.name ? `Renamed the folder “${text(before.name)}” to ` : "Changed the folder ", target];
     case "folder.activate":

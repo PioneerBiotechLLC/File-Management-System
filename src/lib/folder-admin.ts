@@ -18,10 +18,10 @@ const folderFields = z.object({
 
 type FolderInput = z.input<typeof folderFields>;
 
-type FolderRow = { id: string; parentId: string | null; name: string; access: "everyone" | "restricted"; isActive: boolean };
+type FolderRow = { id: string; parentId: string | null; name: string; access: "everyone" | "restricted"; isActive: boolean; kind: string };
 
 async function orgFolders(prisma: Db, orgId: string): Promise<FolderRow[]> {
-  return prisma.folder.findMany({ where: { orgId }, select: { id: true, parentId: true, name: true, access: true, isActive: true } });
+  return prisma.folder.findMany({ where: { orgId }, select: { id: true, parentId: true, name: true, access: true, isActive: true, kind: true } });
 }
 
 /** The folder and everything under it. */
@@ -72,9 +72,11 @@ export async function createFolder(prisma: Db, actor: Actor, input: FolderInput)
   checkParent(folders, data.parentId);
   checkUnique(folders, data.parentId, data.name);
   const siblings = folders.filter((f) => f.parentId === data.parentId).length;
+  // A folder made inside a project is part of the project, so the AI never files into it.
+  const inProject = folders.find((f) => f.id === data.parentId)?.kind === "project";
   return prisma.$transaction(async (tx) => {
     const folder = await tx.folder.create({
-      data: { ...data, orgId: actor.orgId, sortOrder: siblings, createdBy: actor.email },
+      data: { ...data, orgId: actor.orgId, sortOrder: siblings, createdBy: actor.email, ...(inProject ? { kind: "project" as const } : {}) },
       select: { id: true },
     });
     await tx.auditLog.create({

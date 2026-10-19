@@ -166,8 +166,10 @@ const startInput = z.object({
   size: z.number().int().positive("The file is empty."),
   mimeType: z.string().max(300),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
-  /** A folder chosen up front files the upload at once, skipping the AI. The web app never does this. */
+  /** A folder chosen up front files the upload at once, skipping the AI: only project uploads do this. */
   folderId: z.string().min(1).nullish(),
+  /** "folder": an identical file elsewhere does not count, only one already in this folder (projects keep their copies). */
+  duplicatesIn: z.enum(["company", "folder"]).optional(),
   /** Set to add a new version to this file instead of creating a file. */
   fileId: z.string().min(1).nullish(),
   allowDuplicate: z.boolean().optional(),
@@ -246,7 +248,7 @@ export async function startUpload(prisma: Db, ctx: FileContext, rawInput: StartU
 
   if (!input.allowDuplicate) {
     const existing = await prisma.storedFile.findFirst({
-      where: visibleFiles(ctx, { sha256: input.sha256 }),
+      where: visibleFiles(ctx, { sha256: input.sha256, ...(input.duplicatesIn === "folder" ? { folderId: input.folderId ?? null } : {}) }),
       select: { id: true, name: true, folderId: true },
       orderBy: { createdAt: "asc" },
     });
@@ -349,6 +351,11 @@ export async function confirmUpload(
         },
       }),
     ]);
+    // Filed straight away (a project upload): findable by its name, with its facts CSV, like any filed file.
+    if (folderId) {
+      await reindexFile(prisma, file.id);
+      await syncFactsCsv(prisma, file.id);
+    }
     return done(status, folderId);
   }
 

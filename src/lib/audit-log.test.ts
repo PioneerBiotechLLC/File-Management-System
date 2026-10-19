@@ -56,6 +56,8 @@ describe("describeEntry", () => {
       "Changed sara@x.com from editor to admin",
     );
     expect(sentence("user.reactivate", "u9", undefined, undefined, "user")).toBe("Reactivated vic@x.com");
+    expect(sentence("folder.import", "sales", undefined, { created: 12 }, "folder")).toBe("Created 12 project folders under Sales / Quotations");
+    expect(sentence("folder.import", "sales", undefined, { created: 1 }, "folder")).toBe("Created 1 project folder under Sales / Quotations");
     expect(sentence("something.new", "x")).toBe("something.new");
   });
 
