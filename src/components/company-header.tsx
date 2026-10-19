@@ -44,7 +44,6 @@ export function CompanyHeader({
   }
   if (canManage) {
     nav.push({ href: `${base}/bulk`, label: "Bulk upload", active: pathname.startsWith(`${base}/bulk`) });
-    nav.push({ href: `${base}/projects`, label: "Upload project", active: pathname.startsWith(`${base}/projects`) });
     nav.push({ href: `${base}/refile`, label: "Re-file", active: pathname.startsWith(`${base}/refile`) });
     nav.push({ href: `${base}/log`, label: "Log", active: pathname.startsWith(`${base}/log`) });
     nav.push({ href: `${base}/usage`, label: "Usage", active: pathname.startsWith(`${base}/usage`) });

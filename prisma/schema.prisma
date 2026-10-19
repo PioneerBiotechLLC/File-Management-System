@@ -60,7 +60,7 @@ enum FolderKind {
   tech_party
   material
   tech_doc
-  /// Under Projects: kept as uploaded, with the uploader's own subfolders. The AI never files into these.
+  /// Already in the database for project uploads (kept as uploaded, never filed by the AI); unused until that returns.
   project
 }
 

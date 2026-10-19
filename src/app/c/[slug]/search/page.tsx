@@ -1,6 +1,5 @@
 import { db } from "@/lib/db";
 import { fileContext } from "@/lib/files";
-import { hiddenProjectFolder, projectLevels } from "@/lib/projects";
 import { companyContext } from "@/lib/session";
 import { SearchBox } from "./search-box";
 
@@ -13,10 +12,8 @@ export default async function SearchPage({ params, searchParams }: { params: Pro
   const query = await searchParams;
   const { org, role, user } = await companyContext(slug);
   const ctx = await fileContext(db(), { orgId: org.id, userId: user.id, email: user.email, role });
-  // Projects are offered down to each project; searching a project includes its subfolders.
-  const levels = projectLevels(ctx.folders);
   const folders = ctx.folders
-    .filter((f) => ctx.visible.has(f.id) && !hiddenProjectFolder(levels, f.id))
+    .filter((f) => ctx.visible.has(f.id))
     .map((f) => ({ id: f.id, path: ctx.paths.get(f.id) ?? f.name }))
     .sort((a, b) => a.path.localeCompare(b.path));
   const { ANTHROPIC_API_KEY } = process.env;
