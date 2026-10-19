@@ -381,6 +381,27 @@ export type AnalysisOutcome =
   | { status: "not_read"; reason: string }
   | { status: "limit_reached"; reason: string; limit: LimitReason };
 
+/**
+ * Claude's answer as an analysis, checked against the choices it was offered. Shared by live reads
+ * and batch reads. Throws AnalysisError when the answer is unusable (cut off, missing, malformed).
+ */
+export function analysisFromMessage(
+  message: Pick<Anthropic.Beta.Messages.BetaMessage, "content" | "stop_reason" | "model">,
+  choices: Pick<AnalysisRequest, "folders" | "parties" | "materials">,
+  readStatus: "full" | "partial",
+): AnalysisOutcome {
+  if (message.stop_reason === "refusal") return { status: "not_read", reason: "Claude declined to read this file" };
+  if (message.stop_reason === "max_tokens") throw new AnalysisError("The analysis was cut off at the output limit");
+  const call = message.content.find((b) => b.type === "tool_use" && b.name === ANALYSIS_TOOL.name);
+  if (!call || call.type !== "tool_use") throw new AnalysisError("Claude did not return an analysis");
+  try {
+    return { status: "analyzed", analysis: parseAnalysis(call.input, filingChoices(choices)), readStatus, model: message.model };
+  } catch (error) {
+    if (error instanceof z.ZodError) throw new AnalysisError(`Claude returned an invalid analysis: ${z.prettifyError(error)}`);
+    throw error;
+  }
+}
+
 export class AnalysisError extends Error {
   constructor(message: string) {
     super(message);
@@ -423,19 +444,7 @@ export async function analyzeFile(
     }
 
     const message = await callClaude(prisma, { ...ctx, purpose: "file_analysis" }, params);
-    if (message.stop_reason === "refusal") return { status: "not_read", reason: "Claude declined to read this file" };
-    if (message.stop_reason === "max_tokens") throw new AnalysisError("The analysis was cut off at the output limit");
-
-    const call = message.content.find((b) => b.type === "tool_use" && b.name === ANALYSIS_TOOL.name);
-    if (!call || call.type !== "tool_use") throw new AnalysisError("Claude did not return an analysis");
-    let analysis: Analysis;
-    try {
-      analysis = parseAnalysis(call.input, filingChoices(req));
-    } catch (error) {
-      if (error instanceof z.ZodError) throw new AnalysisError(`Claude returned an invalid analysis: ${z.prettifyError(error)}`);
-      throw error;
-    }
-    return { status: "analyzed", analysis, readStatus: extraction.readStatus, model: message.model };
+    return analysisFromMessage(message, req, extraction.readStatus);
   } catch (error) {
     if (error instanceof AiLimitError) return { status: "limit_reached", reason: error.message, limit: error.reason };
     // A 400 or 413 on a PDF or image means Claude cannot take that file (encrypted, damaged, too many

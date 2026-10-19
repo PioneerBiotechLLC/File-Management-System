@@ -2,7 +2,7 @@
 
 import { AlertCircle, CheckCircle2, ClipboardList, Download, FolderUp, Loader2, Sparkles, Upload } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { confirmUploadAction, startUploadAction } from "@/app/c/[slug]/actions";
 import { putToBucket, sha256Hex } from "@/components/upload-provider";
 import { Button } from "@/components/ui/button";
@@ -10,7 +10,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import type { AutoFileResult } from "@/app/c/[slug]/files/[id]/auto-file/route";
 import { Badge } from "@/components/ui/badge";
 import { formatBytes, isBlockedFile } from "@/lib/file-names";
+import type { BatchStatus } from "@/lib/batch-reading";
 import { isZipName, zipEntries } from "@/lib/zip-entries";
+import { batchStatusAction, queueForBatchAction, submitBatchAction } from "./actions";
+import { BatchPanel } from "./batch-panel";
 
 /**
  * Two lanes: files are hashed and uploaded two at a time, then handed one at a time to the AI
@@ -19,7 +22,7 @@ import { isZipName, zipEntries } from "@/lib/zip-entries";
  * Zips are opened here and each document inside is handled like a file chosen on its own.
  */
 
-type Phase = "queued" | "hashing" | "uploading" | "finishing" | "waiting" | "reading" | "filed" | "review" | "duplicate" | "skipped" | "failed";
+type Phase = "queued" | "hashing" | "uploading" | "finishing" | "waiting" | "reading" | "batched" | "filed" | "review" | "duplicate" | "skipped" | "failed";
 
 type Item = {
   id: number;
@@ -44,7 +47,7 @@ type Picked = { name: string; relPath: string; size: number; load: () => Promise
 const UPLOAD_LANES = 2;
 const BUSY_WAIT_MS = 8_000;
 const BUSY_RETRIES = 30;
-const DONE: Phase[] = ["filed", "review", "duplicate", "skipped", "failed"];
+const DONE: Phase[] = ["batched", "filed", "review", "duplicate", "skipped", "failed"];
 const SYSTEM_FILES = /^(\.DS_Store|Thumbs\.db|desktop\.ini|~\$.*|\._.*)$/;
 /** Word's backup and auto-recovery copies: the real document is beside them, and would otherwise be skipped as their duplicate. */
 const BACKUP_FILES = /\.(wbk|asd|bak|tmp)$/i;
@@ -67,8 +70,23 @@ function csvOf(items: Item[]): string {
   return ["file,bytes,result,detail,new company,confidence %,unsure,id", ...rows.map((r) => r.map(cell).join(","))].join("\n");
 }
 
-export function BulkUploader({ slug, maxMb, aiMaxMb, aiAvailable }: { slug: string; maxMb: number; aiMaxMb: number; aiAvailable: boolean }) {
+export function BulkUploader({
+  slug,
+  maxMb,
+  aiMaxMb,
+  aiAvailable,
+  batchStatus,
+}: {
+  slug: string;
+  maxMb: number;
+  aiMaxMb: number;
+  aiAvailable: boolean;
+  batchStatus: BatchStatus;
+}) {
   const [items, setItems] = useState<Item[]>([]);
+  const [batchMode, setBatchMode] = useState(false);
+  const [batch, setBatch] = useState(batchStatus);
+  const [batchError, setBatchError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [opening, setOpening] = useState(false);
   const nextId = useRef(1);
@@ -117,6 +135,9 @@ export function BulkUploader({ slug, maxMb, aiMaxMb, aiAvailable }: { slug: stri
 
   const start = async (retrying: Item[] = []) => {
     setRunning(true);
+    setBatchError(null);
+    // Retries of failed reads are read now; only a fresh run follows the batch choice.
+    const batched = batchMode && retrying.length === 0;
     const queue = retrying.length ? [] : items.filter((i) => i.phase === "queued");
     const forAi: Item[] = [...retrying];
     let aiRunning = false;
@@ -155,6 +176,11 @@ export function BulkUploader({ slug, maxMb, aiMaxMb, aiAvailable }: { slug: stri
         update(item.id, { phase: "finishing", progress: 1 });
         const done = await confirmUploadAction(slug, { fileId, versionNo });
         if (!done.ok) return update(item.id, { phase: "failed", detail: done.error });
+        if (batched) {
+          const queuedForBatch = await queueForBatchAction(slug, done.data.fileId);
+          if (queuedForBatch.ok) return update(item.id, { phase: "batched", fileId: done.data.fileId, detail: "Waiting to be sent for batch reading" });
+          // Could not be left for the batch: read it now instead.
+        }
         update(item.id, { phase: "waiting", fileId: done.data.fileId });
         forAi.push({ ...item, fileId: done.data.fileId });
         void aiLane();
@@ -172,10 +198,25 @@ export function BulkUploader({ slug, maxMb, aiMaxMb, aiAvailable }: { slug: stri
     void aiLane();
     // Wait for the AI lane to finish what the uploads handed over.
     while (aiRunning || forAi.length) await new Promise((resolve) => setTimeout(resolve, 500));
+    // Batch mode: send everything that waits, a batch at a time.
+    if (batched) {
+      for (;;) {
+        const sent = await submitBatchAction(slug);
+        if (!sent.ok) {
+          setBatchError(`${sent.error} The files wait on this page; send them from the panel below.`);
+          break;
+        }
+        if (sent.data.sent === 0 || sent.data.waiting === 0) break;
+      }
+      setItems((prev) => prev.map((i) => (i.phase === "batched" ? { ...i, detail: "Sent for batch reading; results within 24 hours" } : i)));
+      const status = await batchStatusAction(slug);
+      if (status.ok) setBatch(status.data);
+    }
     setRunning(false);
   };
 
   const count = (phase: Phase) => items.filter((i) => i.phase === phase).length;
+  const onBatchStatus = useCallback((s: BatchStatus) => setBatch(s), []);
   const queued = count("queued");
   const finished = items.length > 0 && !running && items.every((i) => DONE.includes(i.phase));
   const newParties = [...new Set(items.flatMap((i) => (i.newParty ? [i.newParty] : [])))];
@@ -214,12 +255,23 @@ export function BulkUploader({ slug, maxMb, aiMaxMb, aiAvailable }: { slug: stri
           {running || opening ? <Loader2 className="animate-spin" /> : <Sparkles />}
           {opening ? "Opening zips…" : running ? "Working…" : queued ? `Upload and file ${queued} ${queued === 1 ? "file" : "files"}` : "Upload and file"}
         </Button>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" className="size-4" checked={batchMode} onChange={(e) => setBatchMode(e.target.checked)} disabled={running} />
+          Read in a batch: half price, results within 24 hours
+        </label>
         {items.length > 0 && !running && !opening && (
           <Button variant="ghost" onClick={() => setItems([])}>
             Clear
           </Button>
         )}
       </div>
+
+      {batchError && (
+        <p role="alert" className="text-destructive text-sm">
+          {batchError}
+        </p>
+      )}
+      <BatchPanel slug={slug} status={batch} onStatus={onBatchStatus} />
 
       {items.length > 0 && (
         <div className="bg-card grid gap-3 rounded-xl border p-4 text-sm">
@@ -235,6 +287,11 @@ export function BulkUploader({ slug, maxMb, aiMaxMb, aiAvailable }: { slug: stri
             <span>
               <strong>{count("review")}</strong> for review
             </span>
+            {count("batched") > 0 && (
+              <span>
+                <strong>{count("batched")}</strong> sent for batch reading
+              </span>
+            )}
             <span>
               <strong>{count("duplicate")}</strong> duplicates
             </span>
@@ -330,6 +387,7 @@ export function BulkUploader({ slug, maxMb, aiMaxMb, aiAvailable }: { slug: stri
 function Status({ item }: { item: Item }) {
   const label: Record<Phase, string> = {
     queued: "Waiting",
+    batched: "Batch reading",
     hashing: "Checking…",
     uploading: `Uploading ${Math.round(item.progress * 100)}%`,
     finishing: "Saving…",
@@ -344,7 +402,7 @@ function Status({ item }: { item: Item }) {
   const icon =
     item.phase === "filed" ? (
       <CheckCircle2 className="size-4 text-green-600" />
-    ) : item.phase === "review" || item.phase === "duplicate" ? (
+    ) : item.phase === "review" || item.phase === "duplicate" || item.phase === "batched" ? (
       <ClipboardList className="size-4 text-amber-600" />
     ) : item.phase === "failed" || item.phase === "skipped" ? (
       <AlertCircle className="text-destructive size-4" />

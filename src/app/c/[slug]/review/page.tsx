@@ -31,7 +31,9 @@ export default async function ReviewPage({ params, searchParams }: { params: Pro
   const files: ReviewFile[] = waiting.map((f) => {
     const readByAi = f.readStatus === "full" || f.readStatus === "partial";
     const reading = f.status === "processing" && f.processingStartedAt !== null && now - f.processingStartedAt.getTime() < READ_TIMEOUT_MS;
-    const step = reading ? "reading" : f.summaryConfirmedAt ? "folder" : "summary";
+    // Left for batch reading: read within 24 hours, then filed or back here.
+    const batch = f.status === "processing" && f.batchQueuedAt !== null;
+    const step = reading || batch ? "reading" : f.summaryConfirmedAt ? "folder" : "summary";
     return {
       id: f.id,
       name: f.name,
@@ -40,9 +42,10 @@ export default async function ReviewPage({ params, searchParams }: { params: Pro
       uploader: f.uploader.name ?? f.uploader.email,
       uploadedAt: formatDate.format(f.createdAt),
       step,
+      batch,
       readByAi,
       aiNote: f.status === "processing" && !reading ? "The AI did not finish reading this file." : (f.aiError ?? null),
-      retryable: !readByAi && f.attempts < MAX_READ_ATTEMPTS && (f.status === "processing" || (f.readStatus === null && f.aiError !== null)),
+      retryable: !batch && !readByAi && f.attempts < MAX_READ_ATTEMPTS && (f.status === "processing" || (f.readStatus === null && f.aiError !== null)),
       form: summaryToForm(f),
       suggestion: suggestionFor(
         { folderId: f.suggestedFolderId, trading: f.suggestedTrading, confidence: f.filingConfidence, reason: f.filingReason },
@@ -65,7 +68,7 @@ export default async function ReviewPage({ params, searchParams }: { params: Pro
           {role === "admin" ? " You see everyone's." : " You see your own."}
         </p>
       </div>
-      <ReadingWatch active={files.some((f) => f.step === "reading")} />
+      <ReadingWatch active={files.some((f) => f.step === "reading" && !f.batch)} />
       {files.length === 0 ? (
         <p className="text-muted-foreground rounded-lg border border-dashed p-10 text-center text-sm">Nothing is waiting. Every file is filed.</p>
       ) : (

@@ -25,6 +25,8 @@ export type ReviewFile = {
   uploadedAt: string;
   /** "reading": the AI is on it; "summary": needs checking or writing; "folder": summary confirmed. */
   step: "reading" | "summary" | "folder";
+  /** Waiting for batch reading rather than being read now. */
+  batch: boolean;
   readByAi: boolean;
   /** Why the AI did not read the file, when it did not. */
   aiNote: string | null;
@@ -106,7 +108,9 @@ export function ReviewCard({
       {step === "reading" && (
         <p className="text-muted-foreground flex items-center gap-2 text-sm">
           <Loader2 className="size-4 animate-spin" />
-          The AI is reading this file. This usually takes 5–30 seconds.
+          {file.batch
+            ? "Waiting for batch reading. The AI reads it within 24 hours (usually within the hour); it is then filed, or comes back here to check."
+            : "The AI is reading this file. This usually takes 5–30 seconds."}
         </p>
       )}
       {step === "summary" && (

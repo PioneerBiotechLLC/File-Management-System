@@ -80,6 +80,7 @@ model Organization {
   memberships Membership[]
   folders     Folder[]
   files       StoredFile[]
+  aiBatches   AiBatch[]
   auditLogs   AuditLog[]
   aiUsage     AiUsage[]
   parties     Party[]
@@ -316,8 +317,13 @@ model StoredFile {
   updatedAt           DateTime        @updatedAt
   /// Soft delete; purged from storage after 30 days.
   deletedAt           DateTime?
+  /// Set when a bulk upload asked for batch reading (half price); cleared once the result is in.
+  batchQueuedAt       DateTime?
+  /// The batch the file was sent in, kept afterwards for reference.
+  aiBatchId           String?
 
   org             Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  aiBatch         AiBatch?      @relation(fields: [aiBatchId], references: [id], onDelete: SetNull)
   folder          Folder?       @relation("FileFolder", fields: [folderId], references: [id], onDelete: SetNull)
   suggestedFolder Folder?       @relation("FileSuggestedFolder", fields: [suggestedFolderId], references: [id], onDelete: SetNull)
   uploader        AppUser       @relation(fields: [uploadedBy], references: [id])
@@ -331,6 +337,31 @@ model StoredFile {
   @@index([orgId, status])
   @@index([orgId, sha256])
   @@index([searchVector], type: Gin)
+  @@index([orgId, batchQueuedAt])
+  @@index([aiBatchId])
+}
+
+/// Files sent to Anthropic's Message Batches API together: read at half price, results within 24 hours.
+model AiBatch {
+  id          String    @id @default(cuid())
+  orgId       String
+  /// Anthropic's batch id; null until the batch is sent.
+  anthropicId String?   @unique
+  /// submitting | in_progress | collecting | ended | failed
+  status      String    @default("submitting")
+  model       String
+  fileCount   Int       @default(0)
+  /// The admin whose upload asked for it; results are filed as them.
+  createdBy   String
+  createdAt   DateTime  @default(now())
+  checkedAt   DateTime?
+  endedAt     DateTime?
+  error       String?
+
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  files StoredFile[]
+
+  @@index([orgId, status])
 }
 
 /// A version with versionNo above its file's currentVersion is an upload that has not been confirmed yet.

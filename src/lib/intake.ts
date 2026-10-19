@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { analyzeFile, factsInput, filingIsUsable, storedFacts, type Facts, type Filing, type LineItem } from "@/lib/analysis";
+import { analyzeFile, factsInput, filingIsUsable, storedFacts, type AnalysisOutcome, type Facts, type Filing, type LineItem } from "@/lib/analysis";
 import { Prisma } from "@/generated/prisma/client";
 import type { Db } from "@/lib/db";
 import { DOC_TYPES, type DocType } from "@/lib/doc-types";
@@ -83,43 +83,96 @@ export function storedFiling(filing: Filing | null) {
   };
 }
 
+type Actor = { orgId: string; email: string };
+type FileRef = { id: string; name: string };
+
+/**
+ * Records that a file was not read, and why. `retryable` when the cause was a failure or a cap,
+ * not the file itself. Shared by live and batch reads; `extra` lets a batch clear its own marks.
+ */
+export async function recordNotRead(
+  prisma: Db,
+  actor: Actor,
+  file: FileRef,
+  reason: string,
+  retryable: boolean,
+  extra: Prisma.StoredFileUncheckedUpdateInput = {},
+): Promise<ReadOutcome> {
+  // Also in the server logs, so a run of failures can be diagnosed without the database.
+  console.error(`AI read ${retryable ? "failed" : "not possible"} for file ${file.id} (${file.name}): ${reason}`);
+  await finishRead(prisma, actor, file, { ...extra, readStatus: retryable ? null : "not_read", aiError: reason }, { outcome: retryable ? "failed" : "not_read", reason });
+  return { status: "not_read", reason, retryable };
+}
+
+/** Stores the AI's draft on the file, or records why it could not read it clearly. */
+export async function recordAnalysis(
+  prisma: Db,
+  actor: Actor,
+  file: FileRef,
+  outcome: Extract<AnalysisOutcome, { status: "analyzed" }>,
+  costUsd: number | null,
+  extra: Prisma.StoredFileUncheckedUpdateInput = {},
+): Promise<ReadOutcome> {
+  const { analysis } = outcome;
+  if (!analysis.readable) return recordNotRead(prisma, actor, file, analysis.problem ?? "The AI could not read this document clearly.", false, extra);
+  await finishRead(
+    prisma,
+    actor,
+    file,
+    {
+      ...extra,
+      title: analysis.title,
+      summary: analysis.summary,
+      docType: analysis.docType,
+      docDate: analysis.docDate,
+      language: analysis.language,
+      facts: analysis.facts,
+      tags: analysis.tags,
+      ...storedFiling(filingIsUsable(analysis.filing) ? analysis.filing : null),
+      aiModel: outcome.model,
+      readStatus: outcome.readStatus,
+      aiError: null,
+    },
+    { outcome: "read", model: outcome.model, costUsd },
+  );
+  return { status: "read" };
+}
+
+async function finishRead(prisma: Db, actor: Actor, file: FileRef, data: Prisma.StoredFileUncheckedUpdateInput, log: Record<string, unknown>) {
+  await prisma.$transaction([
+    prisma.storedFile.update({ where: { id: file.id }, data: { ...data, status: "needs_review", processingStartedAt: null } }),
+    prisma.auditLog.create({
+      data: { orgId: actor.orgId, userEmail: actor.email, action: "file.analyze", targetType: "file", targetId: file.id, after: { name: file.name, ...log } },
+    }),
+  ]);
+}
+
 /**
  * Reads one freshly uploaded file with the AI and stores the draft on the file. Safe to call
- * again: a finished file reports its state, and a read in progress reports `busy`.
+ * again: a finished file reports its state, and a read in progress reports `busy`. A file waiting
+ * for batch reading is left to the batch.
  */
 export async function readUpload(prisma: Db, ctx: FileContext, company: Company, fileId: string): Promise<ReadOutcome> {
   if (!can(ctx.role, "review.accept")) throw notWaiting();
   const file = await prisma.storedFile.findFirst({
     where: waitingWhere(ctx, fileId),
-    select: { id: true, name: true, originalName: true, mimeType: true, sizeBytes: true, currentVersion: true, status: true, readStatus: true, aiError: true, createdAt: true },
+    select: { id: true, name: true, originalName: true, mimeType: true, sizeBytes: true, currentVersion: true, status: true, readStatus: true, aiError: true, createdAt: true, batchQueuedAt: true },
   });
   if (!file) throw notWaiting();
   if (file.status !== "processing") {
     return file.aiError ? { status: "not_read", reason: file.aiError, retryable: file.readStatus === null } : { status: "read" };
   }
+  if (file.batchQueuedAt) return { status: "busy" };
 
   // Take the file; a read older than the timeout is assumed dead.
   const startedAt = new Date();
   const locked = await prisma.storedFile.updateMany({
-    where: { id: file.id, status: "processing", OR: [{ processingStartedAt: null }, { processingStartedAt: { lt: new Date(startedAt.getTime() - READ_TIMEOUT_MS) } }] },
+    where: { id: file.id, status: "processing", batchQueuedAt: null, OR: [{ processingStartedAt: null }, { processingStartedAt: { lt: new Date(startedAt.getTime() - READ_TIMEOUT_MS) } }] },
     data: { processingStartedAt: startedAt, attempts: { increment: 1 }, aiError: null },
   });
   if (locked.count === 0) return { status: "busy" };
 
-  const finish = async (data: Prisma.StoredFileUncheckedUpdateInput, log: Record<string, unknown>) => {
-    await prisma.$transaction([
-      prisma.storedFile.update({ where: { id: file.id }, data: { ...data, status: "needs_review", processingStartedAt: null } }),
-      prisma.auditLog.create({
-        data: { orgId: ctx.orgId, userEmail: ctx.email, action: "file.analyze", targetType: "file", targetId: file.id, after: { name: file.name, ...log } },
-      }),
-    ]);
-  };
-  const notRead = async (reason: string, retryable: boolean): Promise<ReadOutcome> => {
-    // Also in the server logs, so a run of failures can be diagnosed without the database.
-    console.error(`AI read ${retryable ? "failed" : "not possible"} for file ${file.id} (${file.name}): ${reason}`);
-    await finish({ readStatus: retryable ? null : "not_read", aiError: reason }, { outcome: retryable ? "failed" : "not_read", reason });
-    return { status: "not_read", reason, retryable };
-  };
+  const notRead = (reason: string, retryable: boolean) => recordNotRead(prisma, ctx, file, reason, retryable);
 
   if (!aiConfigured()) return notRead("AI reading is not set up on this server.", false);
   const maxMb = limitsEnv().FILES_AI_MAX_MB;
@@ -163,31 +216,13 @@ export async function readUpload(prisma: Db, ctx: FileContext, company: Company,
   }
   if (outcome.status === "limit_reached") return notRead(outcome.reason, true);
   if (outcome.status === "not_read") return notRead(outcome.reason, false);
-  const { analysis } = outcome;
-  if (!analysis.readable) return notRead(analysis.problem ?? "The AI could not read this document clearly.", false);
 
   const usage = await prisma.aiUsage.findFirst({
     where: { fileId: file.id, purpose: "file_analysis", createdAt: { gte: startedAt } },
     orderBy: { createdAt: "desc" },
     select: { costUsd: true },
   });
-  await finish(
-    {
-      title: analysis.title,
-      summary: analysis.summary,
-      docType: analysis.docType,
-      docDate: analysis.docDate,
-      language: analysis.language,
-      facts: analysis.facts,
-      tags: analysis.tags,
-      ...storedFiling(filingIsUsable(analysis.filing) ? analysis.filing : null),
-      aiModel: outcome.model,
-      readStatus: outcome.readStatus,
-      aiError: null,
-    },
-    { outcome: "read", model: outcome.model, costUsd: usage?.costUsd ?? null },
-  );
-  return { status: "read" };
+  return recordAnalysis(prisma, ctx, file, outcome, usage?.costUsd ?? null);
 }
 
 /** Puts a file whose read failed (not one the AI read, or could not read) back in line, a few times at most. */
