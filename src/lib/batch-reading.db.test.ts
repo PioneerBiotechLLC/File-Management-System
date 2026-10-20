@@ -102,7 +102,7 @@ describe.skipIf(!TEST_DATABASE_URL)("batch reading (database)", () => {
     // A queued file is left to the batch, not read now.
     expect(await intake.readUpload(prisma, await ctx(), company, quote)).toEqual({ status: "busy" });
 
-    expect(await submitBatch(prisma, await ctx(), company)).toEqual({ sent: 2, notRead: 1, waiting: 0 });
+    expect(await submitBatch(prisma, await ctx(), company)).toEqual({ sent: 2, notRead: 1, deleted: 0, waiting: 0 });
     const [sent] = remote.created;
     expect(sent!.requests.map((r) => r.custom_id).sort()).toEqual([damaged, quote].sort());
     const params = sent!.requests[0]!.params;
@@ -137,9 +137,10 @@ describe.skipIf(!TEST_DATABASE_URL)("batch reading (database)", () => {
       { custom_id: damaged, result: { type: "errored", error: { type: "error", error: { type: "invalid_request_error", message: "The PDF is damaged" } } } },
     ];
 
-    expect(await collectBatches(prisma, { orgId })).toEqual({ checked: 1, finished: 1, read: 1, filed: 1, review: 1 });
+    expect(await collectBatches(prisma, { orgId })).toEqual({ checked: 1, finished: 1, read: 1, filed: 1, review: 0, deleted: 1 });
     expect(await row(quote)).toMatchObject({ status: "ready", folderId: folder["Sales/Quotations"], title: "Quotation QT-2291", batchQueuedAt: null });
-    expect(await row(damaged)).toMatchObject({ status: "needs_review", readStatus: "not_read", aiError: "Claude could not read this file: The PDF is damaged" });
+    // Claude could not read it at all, so it is deleted, as in bulk upload.
+    expect(await row(damaged)).toMatchObject({ readStatus: "not_read", aiError: "Claude could not read this file: The PDF is damaged", deletedAt: expect.any(Date) });
     // A million input tokens on Sonnet 5.5 is $2; in a batch, $1.
     expect((await prisma.aiUsage.findFirstOrThrow({ where: { fileId: quote } })).costUsd).toBeCloseTo(1, 5);
     expect(await prisma.aiBatch.findFirstOrThrow({ where: { orgId } })).toMatchObject({ status: "ended" });

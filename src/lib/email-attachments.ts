@@ -137,7 +137,7 @@ export type ProcessOutcome = { read: ReadOutcome; filing: BulkOutcome | null };
 
 /**
  * After confirm, in the background: the AI reads the file, then it is filed the way bulk uploads
- * are (sure enough → filed, else Review). Never throws: whatever fails leaves the file in Review.
+ * are (sure enough → its folder, else General; unreadable → deleted). Never throws: whatever fails leaves the file in Review.
  */
 export async function processEmailAttachment(prisma: Db, org: Company, fileId: string): Promise<ProcessOutcome> {
   const ctx = await systemContext(prisma, org);
@@ -147,7 +147,8 @@ export async function processEmailAttachment(prisma: Db, org: Company, fileId: s
     if (read.status !== "busy") break;
     await sleep(BUSY_RETRY_MS);
   }
-  if (read.status !== "read") return { read, filing: null };
+  // A file the AI cannot read goes on too, to be deleted; one whose read failed waits in Review.
+  if (read.status === "busy" || (read.status === "not_read" && read.retryable)) return { read, filing: null };
   try {
     return { read, filing: await autoFileAfterRead(prisma, ctx, org, fileId) };
   } catch (error) {

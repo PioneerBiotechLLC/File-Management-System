@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { reviewToSettle } from "@/lib/bulk";
 import { db } from "@/lib/db";
 import { fileContext, listUnfiled } from "@/lib/files";
 import { MAX_READ_ATTEMPTS, READ_TIMEOUT_MS, summaryToForm } from "@/lib/intake";
@@ -7,8 +8,10 @@ import { can } from "@/lib/permissions";
 import { companyContext } from "@/lib/session";
 import { ReadingWatch } from "./reading-watch";
 import { ReviewCard, type ReviewFile } from "./review-card";
+import { SettleReview } from "./settle-review";
 
 export const metadata = { title: "Review" };
+export const maxDuration = 120;
 
 export default async function ReviewPage({ params, searchParams }: { params: Promise<{ slug: string }>; searchParams: Promise<{ file?: string }> }) {
   const { slug } = await params;
@@ -68,6 +71,7 @@ export default async function ReviewPage({ params, searchParams }: { params: Pro
           {role === "admin" ? " You see everyone's." : " You see your own."}
         </p>
       </div>
+      {role === "admin" && <SettleReview slug={slug} {...await reviewToSettle(db(), org.id)} />}
       <ReadingWatch active={files.some((f) => f.step === "reading" && !f.batch)} />
       {files.length === 0 ? (
         <p className="text-muted-foreground rounded-lg border border-dashed p-10 text-center text-sm">Nothing is waiting. Every file is filed.</p>

@@ -113,7 +113,8 @@ export async function refileOne(prisma: Db, ctx: FileContext, company: Company, 
   if (unfiled) {
     await prisma.storedFile.update({ where: { id: file.id }, data: filing });
     const done = await autoFileAfterRead(prisma, ctx, company, file.id);
-    return done.action === "filed" ? { status: "moved", from: here, to: done.path, confidence: done.confidence } : { status: "kept", at: here, reason: done.reason };
+    if (done.action === "filed") return { status: "moved", from: here, to: done.path, confidence: done.confidence };
+    return done.action === "deleted" ? { status: "skipped", reason: done.reason } : { status: "kept", at: here, reason: done.reason };
   }
   await checkCanMove(prisma, ctx, file.id);
   await fileByAi(prisma, ctx, { fileId: file.id, destination: target.destination, seenAs: target.seenAs });

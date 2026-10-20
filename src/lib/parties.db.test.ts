@@ -292,7 +292,7 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
     });
   });
 
-  it("bulk upload: files a confident AI read at once, and leaves unsure or unread files for Review", async () => {
+  it("bulk upload: files a confident AI read at once, puts an unsure one in General and deletes an unreadable one", async () => {
     const admin = await ctxFor("admin");
     const company = { timezone: "Asia/Dubai" };
     // What readUpload leaves behind: a draft summary and a filing proposal, nothing confirmed.
@@ -310,11 +310,13 @@ describe.skipIf(!TEST_DATABASE_URL)("filing by year, customer and supplier (data
     expect(await prisma.storedFile.findUniqueOrThrow({ where: { id: sure } })).toMatchObject({ status: "ready", summaryConfirmedBy: "admin@api-pharma.net", filedBy: "admin@api-pharma.net" });
     expect(await prisma.auditLog.findFirst({ where: { targetId: sure, action: "file.summary" } })).toMatchObject({ after: { auto: true } });
 
-    expect(await autoFileAfterRead(prisma, admin, company, unsure)).toMatchObject({ action: "review", reason: expect.stringContaining("30% sure") });
-    expect(await autoFileAfterRead(prisma, admin, company, unread)).toMatchObject({ action: "review", reason: expect.stringContaining("handwritten") });
-    expect(await prisma.storedFile.count({ where: { id: { in: [unsure, unread] }, status: "needs_review", summaryConfirmedAt: null } })).toBe(2);
-    expect(await prisma.party.count({ where: { orgId, name: "Somebody" } })).toBe(0);
     await expect(autoFileAfterRead(prisma, await ctxFor("sara"), company, unsure)).rejects.toThrow(/Only admins/);
+    expect(await autoFileAfterRead(prisma, admin, company, unsure)).toMatchObject({ action: "filed", path: "General", unsure: true });
+    expect(await prisma.storedFile.findUniqueOrThrow({ where: { id: unsure } })).toMatchObject({ status: "ready", unsure: true, filingReason: "Unclear" });
+    expect(await autoFileAfterRead(prisma, admin, company, unread)).toMatchObject({ action: "deleted", reason: expect.stringContaining("handwritten") });
+    expect(await prisma.storedFile.findUniqueOrThrow({ where: { id: unread } })).toMatchObject({ deletedAt: expect.any(Date) });
+    // A guess the AI was unsure of adds no customer.
+    expect(await prisma.party.count({ where: { orgId, name: "Somebody" } })).toBe(0);
   });
 
   it("re-files a stored file by the current rules, previewing first and moving only when sure", async () => {

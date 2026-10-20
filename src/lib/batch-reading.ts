@@ -7,7 +7,7 @@ import { aiEnv, limitsEnv } from "@/lib/env";
 import { UserError } from "@/lib/errors";
 import { extract } from "@/lib/extract";
 import { fileContext, type FileContext } from "@/lib/files";
-import { folderChoices, materialChoices, partyChoices, recordAnalysis, recordNotRead } from "@/lib/intake";
+import { NOT_THE_UPLOAD, folderChoices, materialChoices, partyChoices, recordAnalysis, recordNotRead } from "@/lib/intake";
 import { listMaterials, listParties } from "@/lib/parties";
 import { getObject, head, objectKey } from "@/lib/storage";
 import type { Role } from "@/generated/prisma/enums";
@@ -61,12 +61,23 @@ export async function batchStatus(prisma: Db, orgId: string): Promise<BatchStatu
 }
 
 /** Sends the next batch of waiting files. Returns how many went, how many could not be read at all, and how many still wait. */
-export async function submitBatch(prisma: Db, ctx: FileContext, company: Company): Promise<{ sent: number; notRead: number; waiting: number }> {
+/** A file the AI cannot read is deleted, as in bulk upload. Returns whether it was. */
+async function deleteIfUnreadable(prisma: Db, ctx: FileContext, company: { timezone: string }, fileId: string): Promise<boolean> {
+  if (ctx.role !== "admin") return false;
+  const done = await autoFileAfterRead(prisma, ctx, company, fileId).catch((error: unknown) => {
+    if (error instanceof UserError) return null;
+    throw error;
+  });
+  return done?.action === "deleted";
+}
+
+export async function submitBatch(prisma: Db, ctx: FileContext, company: Company): Promise<{ sent: number; notRead: number; deleted: number; waiting: number }> {
   if (ctx.role !== "admin") throw new UserError("Only admins can use batch reading.");
   if (!process.env.ANTHROPIC_API_KEY?.trim() || aiEnv().AI_MAX_CALLS_PER_DAY <= 0) throw new UserError("AI reading is not set up on this server.");
   const model = aiEnv().ANTHROPIC_MODEL;
   const clear = { batchQueuedAt: null, attempts: { increment: 1 } };
   let notRead = 0;
+  let deleted = 0;
 
   // Files the AI never reads are settled now rather than sent.
   const maxAiBytes = limitsEnv().FILES_AI_MAX_MB * 1024 * 1024;
@@ -88,7 +99,7 @@ export async function submitBatch(prisma: Db, ctx: FileContext, company: Company
     chosen.push(file);
     bytes += file.sizeBytes;
   }
-  if (chosen.length === 0) return { sent: 0, notRead, waiting: await prisma.storedFile.count({ where: waitingToSend(ctx.orgId) }) };
+  if (chosen.length === 0) return { sent: 0, notRead, deleted, waiting: await prisma.storedFile.count({ where: waitingToSend(ctx.orgId) }) };
 
   // Claim the files for this batch, so a second sender (the cron, another tab) cannot send them too.
   const batch = await prisma.aiBatch.create({ data: { orgId: ctx.orgId, model, createdBy: ctx.userId }, select: { id: true } });
@@ -109,14 +120,15 @@ export async function submitBatch(prisma: Db, ctx: FileContext, company: Company
       const stored = await head(key);
       const loaded = stored && stored.sizeBytes === file.sizeBytes ? await getObject(key) : null;
       if (!loaded) {
-        await recordNotRead(prisma, ctx, file, stored ? "The stored file is not the one that was uploaded, so it was not read." : "The file was not found in storage.", !stored, clear);
+        await recordNotRead(prisma, ctx, file, stored ? NOT_THE_UPLOAD : "The file was not found in storage.", !stored, clear);
         notRead += 1;
         continue;
       }
       const extraction = await extract(loaded, file.originalName, file.mimeType);
       if (extraction.kind === "unreadable") {
         await recordNotRead(prisma, ctx, file, extraction.reason, false, clear);
-        notRead += 1;
+        if (await deleteIfUnreadable(prisma, ctx, company, file.id)) deleted += 1;
+        else notRead += 1;
         continue;
       }
       // The request a live read sends, without server-side fallbacks, which the Batches API does not take.
@@ -141,7 +153,7 @@ export async function submitBatch(prisma: Db, ctx: FileContext, company: Company
       throw new UserError(`Anthropic did not accept the batch: ${message}`);
     }
   }
-  return { sent: requests.length, notRead, waiting: await prisma.storedFile.count({ where: waitingToSend(ctx.orgId) }) };
+  return { sent: requests.length, notRead, deleted, waiting: await prisma.storedFile.count({ where: waitingToSend(ctx.orgId) }) };
 }
 
 /** A send that was cut off before Anthropic took the batch: its files go back to waiting. */
@@ -156,7 +168,7 @@ async function releaseAbandoned(prisma: Db, orgId?: string): Promise<void> {
   }
 }
 
-export type CollectResult = { checked: number; finished: number; read: number; filed: number; review: number };
+export type CollectResult = { checked: number; finished: number; read: number; filed: number; review: number; deleted: number };
 
 /** The admin who sent a batch, as a file context; their results are filed as them. */
 async function senderContext(prisma: Db, orgId: string, userId: string): Promise<FileContext> {
@@ -173,7 +185,7 @@ async function senderContext(prisma: Db, orgId: string, userId: string): Promise
  * store it, then filed when the AI was sure enough. Batches still running are only checked.
  */
 export async function collectBatches(prisma: Db, opts: { orgId?: string; limit?: number } = {}): Promise<CollectResult> {
-  const out: CollectResult = { checked: 0, finished: 0, read: 0, filed: 0, review: 0 };
+  const out: CollectResult = { checked: 0, finished: 0, read: 0, filed: 0, review: 0, deleted: 0 };
   await releaseAbandoned(prisma, opts.orgId);
   const stale = new Date(Date.now() - STALE_COLLECTING_MS);
   const open = await prisma.aiBatch.findMany({
@@ -248,7 +260,7 @@ export async function collectBatches(prisma: Db, opts: { orgId?: string; limit?:
         }
         if (outcome.status !== "analyzed") {
           await recordNotRead(prisma, ctx, file, outcome.reason, false, clear);
-          out.review += 1;
+          out[(await deleteIfUnreadable(prisma, ctx, org, file.id)) ? "deleted" : "review"] += 1;
           continue;
         }
         const read = await recordAnalysis(prisma, ctx, file, outcome, costUsd, clear);
@@ -263,8 +275,7 @@ export async function collectBatches(prisma: Db, opts: { orgId?: string; limit?:
         }
         try {
           const filed = await autoFileAfterRead(prisma, ctx, org, file.id);
-          if (filed.action === "filed") out.filed += 1;
-          else out.review += 1;
+          out[filed.action === "filed" ? "filed" : filed.action === "deleted" ? "deleted" : "review"] += 1;
         } catch (error) {
           if (!(error instanceof UserError)) throw error;
           out.review += 1;
@@ -274,7 +285,7 @@ export async function collectBatches(prisma: Db, opts: { orgId?: string; limit?:
         const invalid = result.error.error.type === "invalid_request_error";
         const reason = invalid ? `Claude could not read this file: ${result.error.error.message.slice(0, 200)}` : `Batch reading failed (${result.error.error.type}); try again with AI.`;
         await recordNotRead(prisma, ctx, file, reason, !invalid, clear);
-        out.review += 1;
+        out[invalid && (await deleteIfUnreadable(prisma, ctx, org, file.id)) ? "deleted" : "review"] += 1;
       } else {
         await recordNotRead(prisma, ctx, file, "Batch reading did not finish in time; try again with AI.", true, clear);
         out.review += 1;

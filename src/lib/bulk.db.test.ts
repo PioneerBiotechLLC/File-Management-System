@@ -35,7 +35,7 @@ const { createCompany } = await import("./companies");
 const { addMember } = await import("./users");
 const files = await import("./files");
 const intake = await import("./intake");
-const { autoFileAfterRead } = await import("./bulk");
+const { autoFileAfterRead, reviewToSettle, settleReview } = await import("./bulk");
 
 const company = { name: "API Pharma", domain: "api-pharma.net", timezone: "Asia/Dubai" };
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -63,20 +63,33 @@ describe.skipIf(!TEST_DATABASE_URL)("bulk upload: filing without confirmation (d
   const ctx = () => files.fileContext(prisma, { orgId, userId: adminId, email: "admin@api-pharma.net", role: "admin" });
   const fileRow = (id: string) => prisma.storedFile.findUniqueOrThrow({ where: { id } });
 
-  /** Uploads a file and has the AI read it with the given filing answer. */
-  async function uploadAndRead(name: string, filing: ReturnType<typeof folderFiling>) {
+  async function upload(name: string) {
     const started = await files.startUpload(prisma, await ctx(), { name, size: name.length, mimeType: "application/pdf", sha256: sha(name), allowDuplicate: true });
     if (started.kind !== "upload") throw new Error("expected an upload");
     stored.set(`${orgId}/${started.fileId}/${started.versionNo}.upload`, new TextEncoder().encode(name));
     await files.confirmUpload(prisma, await ctx(), { fileId: started.fileId, versionNo: started.versionNo });
+    return started.fileId;
+  }
+
+  /** Uploads a file and has the AI read it with the given filing answer. */
+  async function uploadAndRead(name: string, filing: ReturnType<typeof folderFiling>) {
+    const fileId = await upload(name);
     analyzeFile.mockResolvedValueOnce({
       status: "analyzed",
       readStatus: "full",
       model: "m",
       analysis: { readable: true, problem: null, title: name, summary: "A document.", docType: "other", docDate: null, language: "en", facts: { parties: [], references: [], amounts: [], products: [] }, tags: [], filing },
     });
-    expect(await intake.readUpload(prisma, await ctx(), company, started.fileId)).toEqual({ status: "read" });
-    return started.fileId;
+    expect(await intake.readUpload(prisma, await ctx(), company, fileId)).toEqual({ status: "read" });
+    return fileId;
+  }
+
+  /** Uploads a file the AI cannot read. */
+  async function uploadUnreadable(name: string) {
+    const fileId = await upload(name);
+    analyzeFile.mockResolvedValueOnce({ status: "not_read", reason: "The file is empty." });
+    expect(await intake.readUpload(prisma, await ctx(), company, fileId)).toMatchObject({ status: "not_read", retryable: false });
+    return fileId;
   }
 
   beforeAll(async () => {
@@ -107,11 +120,63 @@ describe.skipIf(!TEST_DATABASE_URL)("bulk upload: filing without confirmation (d
     expect(csv).toContain(",Sales / Quotations,");
   });
 
-  it("leaves anything under 60% in Review, wherever the AI thought it went", async () => {
-    const fileId = await uploadAndRead("maybe.pdf", folderFiling(folder.General!, 0.59));
-    expect(await autoFileAfterRead(prisma, await ctx(), company, fileId)).toEqual({ action: "review", reason: "The AI was only 59% sure it belongs in General." });
-    expect(await fileRow(fileId)).toMatchObject({ folderId: null, status: "needs_review", unsure: false });
-    expect((await files.listUnfiled(prisma, await ctx())).map((f) => f.id)).toContain(fileId);
+  it("puts anything under 60% in General, marked unsure, wherever the AI thought it went", async () => {
+    const fileId = await uploadAndRead("maybe.pdf", folderFiling(folder["Sales/Quotations"]!, 0.59));
+    expect(await autoFileAfterRead(prisma, await ctx(), company, fileId)).toMatchObject({ action: "filed", path: "General", confidence: 0.59, unsure: true });
+    expect(await fileRow(fileId)).toMatchObject({ folderId: folder.General, status: "ready", unsure: true });
+    expect((await files.listUnfiled(prisma, await ctx())).map((f) => f.id)).not.toContain(fileId);
+  });
+
+  it("deletes a file the AI cannot read, which can be restored", async () => {
+    const fileId = await uploadUnreadable("empty.pdf");
+    expect(await autoFileAfterRead(prisma, await ctx(), company, fileId)).toEqual({ action: "deleted", reason: "The AI could not read it: The file is empty." });
+    expect(await fileRow(fileId)).toMatchObject({ deletedAt: expect.any(Date) });
+    expect(await prisma.auditLog.count({ where: { orgId, action: "file.delete", targetId: fileId } })).toBe(1);
+    await files.restoreFile(prisma, await ctx(), { fileId });
+    expect(await fileRow(fileId)).toMatchObject({ deletedAt: null, status: "needs_review" });
+  });
+
+  it("keeps a file too large for the AI, or whose read failed, in Review", async () => {
+    vi.stubEnv("FILES_AI_MAX_MB", "1");
+    const big = await upload("big.pdf");
+    await prisma.storedFile.update({ where: { id: big }, data: { status: "needs_review", readStatus: "not_read", sizeBytes: 2 * 1024 * 1024, aiError: "The file is larger than 1 MB, the most the AI reads." } });
+    expect(await autoFileAfterRead(prisma, await ctx(), company, big)).toMatchObject({ action: "review" });
+
+    const failed = await upload("failed.pdf");
+    analyzeFile.mockRejectedValueOnce(new Error("overloaded"));
+    expect(await intake.readUpload(prisma, await ctx(), company, failed)).toMatchObject({ status: "not_read", retryable: true });
+    expect(await autoFileAfterRead(prisma, await ctx(), company, failed)).toMatchObject({ action: "review" });
+    expect(await prisma.storedFile.count({ where: { id: { in: [big, failed] }, deletedAt: null } })).toBe(2);
+    await prisma.storedFile.updateMany({ where: { id: { in: [big, failed] } }, data: { deletedAt: new Date() } });
+  });
+
+  it("clears Review in steps: files what was read, deletes what cannot be read, keeps the rest", async () => {
+    vi.stubEnv("FILES_AI_MAX_MB", "1");
+    // What earlier runs left in Review.
+    await prisma.storedFile.updateMany({ where: { orgId, folderId: null, deletedAt: null }, data: { deletedAt: new Date() } });
+    const sure = await uploadAndRead("sure.pdf", folderFiling(folder["Sales/Quotations"]!, 0.9));
+    const unsure = await uploadAndRead("unsure.pdf", folderFiling(folder["Sales/Quotations"]!, 0.3));
+    const unreadable = await uploadUnreadable("blank.pdf");
+    const big = await upload("huge.pdf");
+    await prisma.storedFile.update({ where: { id: big }, data: { status: "needs_review", readStatus: "not_read", sizeBytes: 2 * 1024 * 1024, aiError: "Too large" } });
+    // Someone has started on this one; it is theirs to finish.
+    const started = await uploadAndRead("started.pdf", folderFiling(folder["Sales/Quotations"]!, 0.3));
+    await prisma.storedFile.update({ where: { id: started }, data: { summaryConfirmedAt: new Date() } });
+
+    expect(await reviewToSettle(prisma, orgId)).toEqual({ toFile: 2, toDelete: 1 });
+    const first = await settleReview(prisma, await ctx(), company, { limit: 2 });
+    expect(first.next).not.toBeNull();
+    const second = await settleReview(prisma, await ctx(), company, { after: first.next, limit: 2 });
+    expect(second.next).toBeNull();
+    const sum = (k: "filed" | "unsure" | "deleted" | "kept") => first[k] + second[k];
+    expect([sum("filed"), sum("unsure"), sum("deleted"), sum("kept")]).toEqual([1, 1, 1, 0]);
+
+    expect(await fileRow(sure)).toMatchObject({ folderId: folder["Sales/Quotations"], unsure: false });
+    expect(await fileRow(unsure)).toMatchObject({ folderId: folder.General, unsure: true });
+    expect(await fileRow(unreadable)).toMatchObject({ deletedAt: expect.any(Date) });
+    expect(await fileRow(big)).toMatchObject({ folderId: null, deletedAt: null });
+    expect(await fileRow(started)).toMatchObject({ folderId: null, deletedAt: null });
+    expect(await reviewToSettle(prisma, orgId)).toEqual({ toFile: 0, toDelete: 0 });
   });
 
   it("puts a file with no place in the tree in General, marked unsure, until someone moves it", async () => {
@@ -138,7 +203,7 @@ describe.skipIf(!TEST_DATABASE_URL)("bulk upload: filing without confirmation (d
     await prisma.folder.update({ where: { id: folder["Logistics/Delivery Notes"]! }, data: { isActive: false } });
     await prisma.folder.update({ where: { id: folder.General! }, data: { name: "Misc", nameAr: null } });
     try {
-      expect(await autoFileAfterRead(prisma, await ctx(), company, fileId)).toEqual({ action: "review", reason: "The AI found no place for it, and there is no General folder to put it in." });
+      expect(await autoFileAfterRead(prisma, await ctx(), company, fileId)).toEqual({ action: "review", reason: "The AI found no place for it. There is no General folder to put it in." });
     } finally {
       await prisma.folder.update({ where: { id: folder["Logistics/Delivery Notes"]! }, data: { isActive: true } });
       await prisma.folder.update({ where: { id: folder.General! }, data: { name: "General", nameAr: "عام" } });

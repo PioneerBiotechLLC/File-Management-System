@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertCircle, CheckCircle2, ClipboardList, Download, FolderUp, Loader2, Sparkles, Upload } from "lucide-react";
+import { AlertCircle, CheckCircle2, ClipboardList, Download, FolderUp, Loader2, Sparkles, Trash2, Upload } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { confirmUploadAction, startUploadAction } from "@/app/c/[slug]/actions";
@@ -22,7 +22,7 @@ import { BatchPanel } from "./batch-panel";
  * Zips are opened here and each document inside is handled like a file chosen on its own.
  */
 
-type Phase = "queued" | "hashing" | "uploading" | "finishing" | "waiting" | "reading" | "batched" | "filed" | "review" | "duplicate" | "skipped" | "failed";
+type Phase = "queued" | "hashing" | "uploading" | "finishing" | "waiting" | "reading" | "batched" | "filed" | "deleted" | "review" | "duplicate" | "skipped" | "failed";
 
 type Item = {
   id: number;
@@ -47,7 +47,7 @@ type Picked = { name: string; relPath: string; size: number; load: () => Promise
 const UPLOAD_LANES = 2;
 const BUSY_WAIT_MS = 8_000;
 const BUSY_RETRIES = 30;
-const DONE: Phase[] = ["batched", "filed", "review", "duplicate", "skipped", "failed"];
+const DONE: Phase[] = ["batched", "filed", "deleted", "review", "duplicate", "skipped", "failed"];
 const SYSTEM_FILES = /^(\.DS_Store|Thumbs\.db|desktop\.ini|~\$.*|\._.*)$/;
 /** Word's backup and auto-recovery copies: the real document is beside them, and would otherwise be skipped as their duplicate. */
 const BACKUP_FILES = /\.(wbk|asd|bak|tmp)$/i;
@@ -154,7 +154,8 @@ export function BulkUploader({
         else if (result.outcome.action === "filed") {
           const { path, newParty, confidence, unsure } = result.outcome;
           update(item.id, { phase: "filed", detail: path, newParty, confidence, unsure });
-        } else update(item.id, { phase: "review", detail: result.outcome.reason });
+        } else if (result.outcome.action === "deleted") update(item.id, { phase: "deleted", detail: `${result.outcome.reason} It can be restored from Deleted for 30 days.` });
+        else update(item.id, { phase: "review", detail: result.outcome.reason });
       }
       aiRunning = false;
     };
@@ -284,6 +285,11 @@ export function BulkUploader({
                 <strong>{unsure}</strong> in General, unsure
               </span>
             )}
+            {count("deleted") > 0 && (
+              <span>
+                <strong>{count("deleted")}</strong> deleted, unreadable
+              </span>
+            )}
             <span>
               <strong>{count("review")}</strong> for review
             </span>
@@ -377,7 +383,7 @@ export function BulkUploader({
       {items.length === 0 && (
         <p className="text-muted-foreground rounded-lg border border-dashed p-10 text-center text-sm">
           Choose a folder (all its files, subfolders included) or a set of files. Zips are opened and each file inside is filed on its own. Nothing is sent until you
-          press Upload and file. {formatBytes(maxMb * 1024 * 1024)} per file at most; files over {aiMaxMb} MB are uploaded but wait in Review.
+          press Upload and file. {formatBytes(maxMb * 1024 * 1024)} per file at most; files over {aiMaxMb} MB are uploaded but wait in Review. Files the AI is unsure about go to General, marked unsure; files it cannot read are deleted.
         </p>
       )}
     </div>
@@ -394,6 +400,7 @@ function Status({ item }: { item: Item }) {
     waiting: "Waiting for the AI",
     reading: "AI reading…",
     filed: "Filed",
+    deleted: "Deleted",
     review: "For review",
     duplicate: "Duplicate",
     skipped: "Skipped",
@@ -404,6 +411,8 @@ function Status({ item }: { item: Item }) {
       <CheckCircle2 className="size-4 text-green-600" />
     ) : item.phase === "review" || item.phase === "duplicate" || item.phase === "batched" ? (
       <ClipboardList className="size-4 text-amber-600" />
+    ) : item.phase === "deleted" ? (
+      <Trash2 className="text-muted-foreground size-4" />
     ) : item.phase === "failed" || item.phase === "skipped" ? (
       <AlertCircle className="text-destructive size-4" />
     ) : item.phase === "reading" ? (

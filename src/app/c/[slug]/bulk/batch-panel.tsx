@@ -18,7 +18,7 @@ export function BatchPanel({ slug, status, onStatus }: { slug: string; status: B
   const [busy, setBusy] = useState<"send" | "check" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [last, setLast] = useState<{ at: Date; result: CollectResult } | null>(null);
-  const [totals, setTotals] = useState({ filed: 0, review: 0 });
+  const [totals, setTotals] = useState({ filed: 0, review: 0, deleted: 0 });
 
   const check = useCallback(async () => {
     setBusy("check");
@@ -27,7 +27,7 @@ export function BatchPanel({ slug, status, onStatus }: { slug: string; status: B
       const out = await collectBatchesAction(slug);
       if (!out.ok) return setError(out.error);
       setLast({ at: new Date(), result: out.data.collected });
-      setTotals((t) => ({ filed: t.filed + out.data.collected.filed, review: t.review + out.data.collected.review }));
+      setTotals((t) => ({ filed: t.filed + out.data.collected.filed, review: t.review + out.data.collected.review, deleted: t.deleted + out.data.collected.deleted }));
       onStatus(out.data.status);
     } finally {
       setBusy(null);
@@ -71,9 +71,14 @@ export function BatchPanel({ slug, status, onStatus }: { slug: string; status: B
         <span>
           <strong>{status.reading.toLocaleString("en")}</strong> with the AI
         </span>
-        {(totals.filed > 0 || totals.review > 0) && (
+        {(totals.filed > 0 || totals.review > 0 || totals.deleted > 0) && (
           <span>
             Came back: <strong>{totals.filed.toLocaleString("en")}</strong> filed, <strong>{totals.review.toLocaleString("en")}</strong> for review
+            {totals.deleted > 0 && (
+              <>
+                , <strong>{totals.deleted.toLocaleString("en")}</strong> deleted (unreadable)
+              </>
+            )}
           </span>
         )}
       </div>

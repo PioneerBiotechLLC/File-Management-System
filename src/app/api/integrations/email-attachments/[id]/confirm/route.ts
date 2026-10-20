@@ -30,7 +30,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (status === "processing") {
       after(async () => {
         const outcome = await processEmailAttachment(db(), org, id);
-        const filing = outcome.filing ? (outcome.filing.action === "filed" ? `filed in ${outcome.filing.path}` : `review: ${outcome.filing.reason}`) : "left in Review";
+        const filing = outcome.filing ? (outcome.filing.action === "filed" ? `filed in ${outcome.filing.path}` : `${outcome.filing.action}: ${outcome.filing.reason}`) : "left in Review";
         console.log(`email attachment ${id} (${org.slug}): read ${outcome.read.status}, ${filing}`);
       });
     }

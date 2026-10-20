@@ -109,7 +109,7 @@ describe.skipIf(!TEST_DATABASE_URL)("email attachments from the tracker (databas
     expect(again).toMatchObject({ kind: "duplicate", fileId: started.fileId, name: "PO-4512.pdf", folderPath: "Purchasing / Purchase Orders" });
   });
 
-  it("leaves a file the AI was unsure about in Review", async () => {
+  it("puts a file the AI was unsure about in General, marked unsure", async () => {
     const content = "unclear scan";
     const started = await ea.startEmailAttachment(prisma, { company: "api-pharma", file: { name: "scan.pdf", mimeType: "application/pdf", size: content.length, sha256: sha(content) }, email: email({ messageId: "<scan@x>" }) });
     if (started.kind !== "upload") throw new Error("expected an upload");
@@ -120,15 +120,14 @@ describe.skipIf(!TEST_DATABASE_URL)("email attachments from the tracker (databas
       analysis: { readable: true, problem: null, title: "Scan", summary: "Something.", docType: "other", docDate: null, language: "en", facts: { parties: [], references: [], amounts: [], products: [] }, tags: [], filing: filing(folder["Sales/Quotations"]!, 0.2) },
     });
     const outcome = await ea.processEmailAttachment(prisma, { id: orgId, slug: "api-pharma", ...company }, started.fileId);
-    expect(outcome.filing).toMatchObject({ action: "review" });
+    expect(outcome.filing).toMatchObject({ action: "filed", path: "General", unsure: true });
     const row = await prisma.storedFile.findUniqueOrThrow({ where: { id: started.fileId } });
-    expect(row.status).toBe("needs_review");
-    expect(row.folderId).toBeNull();
+    expect(row).toMatchObject({ status: "ready", folderId: folder.General, unsure: true });
   });
 
   it("confirming a file that is not an email attachment, or twice, is refused or harmless", async () => {
     await expect(ea.confirmEmailAttachment(prisma, { company: "api-pharma", fileId: "nope", versionNo: 1 })).rejects.toBeInstanceOf(UserError);
     const file = await prisma.storedFile.findFirstOrThrow({ where: { orgId, sourceRef: "email:<scan@x>" } });
-    expect((await ea.confirmEmailAttachment(prisma, { company: "api-pharma", fileId: file.id, versionNo: 1 })).status).toBe("needs_review");
+    expect((await ea.confirmEmailAttachment(prisma, { company: "api-pharma", fileId: file.id, versionNo: 1 })).status).toBe("ready");
   });
 });

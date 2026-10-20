@@ -86,6 +86,10 @@ export function storedFiling(filing: Filing | null) {
 type Actor = { orgId: string; email: string };
 type FileRef = { id: string; name: string };
 
+/** Not read for reasons on this side, not the file's: such a file waits in Review instead of being deleted. */
+export const NOT_SET_UP = "AI reading is not set up on this server.";
+export const NOT_THE_UPLOAD = "The stored file is not the one that was uploaded, so it was not read.";
+
 /**
  * Records that a file was not read, and why. `retryable` when the cause was a failure or a cap,
  * not the file itself. Shared by live and batch reads; `extra` lets a batch clear its own marks.
@@ -174,7 +178,7 @@ export async function readUpload(prisma: Db, ctx: FileContext, company: Company,
 
   const notRead = (reason: string, retryable: boolean) => recordNotRead(prisma, ctx, file, reason, retryable);
 
-  if (!aiConfigured()) return notRead("AI reading is not set up on this server.", false);
+  if (!aiConfigured()) return notRead(NOT_SET_UP, false);
   const maxMb = limitsEnv().FILES_AI_MAX_MB;
   if (file.sizeBytes > maxMb * 1024 * 1024) return notRead(`The file is larger than ${maxMb} MB, the most the AI reads.`, false);
 
@@ -182,7 +186,7 @@ export async function readUpload(prisma: Db, ctx: FileContext, company: Company,
   const key = objectKey(ctx.orgId, file.id, file.currentVersion);
   const stored = await head(key);
   if (!stored) return notRead("The file was not found in storage.", true);
-  if (stored.sizeBytes !== file.sizeBytes) return notRead("The stored file is not the one that was uploaded, so it was not read.", false);
+  if (stored.sizeBytes !== file.sizeBytes) return notRead(NOT_THE_UPLOAD, false);
   const bytes = await getObject(key);
   if (!bytes) return notRead("The file was not found in storage.", true);
 
