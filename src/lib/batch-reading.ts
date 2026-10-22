@@ -60,6 +60,8 @@ export type BatchStatus = {
   sending: number;
   reading: number;
   batches: number;
+  /** batches whose results are being taken in right now */
+  collecting: number;
   /** When the oldest batch still with the AI was sent (ISO), for "since …" */
   oldestSentAt: string | null;
   /** Why the latest batch of the past week failed, if one did */
@@ -68,15 +70,16 @@ export type BatchStatus = {
 
 /** How many files wait to be sent, how many are with the AI, and how many batches are out. */
 export async function batchStatus(prisma: Db, orgId: string): Promise<BatchStatus> {
-  const [waiting, sending, reading, batches, oldest, failed] = await Promise.all([
+  const [waiting, sending, reading, batches, collecting, oldest, failed] = await Promise.all([
     prisma.storedFile.count({ where: waitingToSend(orgId) }),
     prisma.storedFile.count({ where: { orgId, status: "processing", deletedAt: null, batchQueuedAt: { not: null }, aiBatch: { status: "submitting" } } }),
     prisma.storedFile.count({ where: { orgId, status: "processing", deletedAt: null, batchQueuedAt: { not: null }, aiBatch: { status: { in: ["in_progress", "collecting"] } } } }),
     prisma.aiBatch.count({ where: { orgId, status: { in: ["in_progress", "collecting"] } } }),
+    prisma.aiBatch.count({ where: { orgId, status: "collecting", checkedAt: { gte: new Date(Date.now() - STALE_COLLECTING_MS) } } }),
     prisma.aiBatch.findFirst({ where: { orgId, status: { in: ["in_progress", "collecting"] } }, orderBy: { createdAt: "asc" }, select: { createdAt: true } }),
     prisma.aiBatch.findFirst({ where: { orgId, status: "failed", error: { not: null }, createdAt: { gte: new Date(Date.now() - 7 * 24 * 3_600_000) } }, orderBy: { createdAt: "desc" }, select: { error: true } }),
   ]);
-  return { waiting, sending, reading, batches, oldestSentAt: oldest?.createdAt.toISOString() ?? null, lastError: failed?.error ?? null };
+  return { waiting, sending, reading, batches, collecting, oldestSentAt: oldest?.createdAt.toISOString() ?? null, lastError: failed?.error ?? null };
 }
 
 const past = (deadlineAt: Date | undefined) => !!deadlineAt && Date.now() >= deadlineAt.getTime();
@@ -352,6 +355,7 @@ export async function collectBatches(prisma: Db, opts: { orgId?: string; limit?:
     }
     await prisma.aiBatch.update({ where: { id: batch.id }, data: { status: "ended", endedAt: new Date() } });
     out.finished += 1;
+    console.log(`batch ${batch.anthropicId} taken in: ${JSON.stringify(out)}`);
   }
   return out;
 }
@@ -382,7 +386,8 @@ export type BatchWork = { collected: CollectResult; sent: number; error: string 
  * out. Run by the cron, by the Review page when an admin opens it, and by its button.
  */
 export async function runBatchWork(prisma: Db, opts: { budgetMs: number; orgId?: string }): Promise<BatchWork> {
-  const deadlineAt = new Date(Date.now() + opts.budgetMs);
+  const started = Date.now();
+  const deadlineAt = new Date(started + opts.budgetMs);
   const out: BatchWork = { collected: { checked: 0, finished: 0, read: 0, filed: 0, review: 0, deleted: 0, partial: false }, sent: 0, error: null };
   try {
     out.collected = await collectBatches(prisma, { orgId: opts.orgId, limit: 10, deadlineAt });
@@ -391,5 +396,7 @@ export async function runBatchWork(prisma: Db, opts: { budgetMs: number; orgId?:
     out.error = (error instanceof Error ? error.message : String(error)).slice(0, 300);
     console.error(`batch work failed: ${out.error}`);
   }
+  // The log is the only record of a run nobody is watching (a cron, the work after a page load).
+  console.log(`batch work (${Math.round((Date.now() - started) / 1000)}s of ${Math.round(opts.budgetMs / 1000)}s): ${JSON.stringify(out)}`);
   return out;
 }

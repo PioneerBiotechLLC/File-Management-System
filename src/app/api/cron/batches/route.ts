@@ -4,7 +4,7 @@ import { db } from "@/lib/db";
 import { cronEnv } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 /**
  * Batch reading, every 15 minutes (.github/workflows/cron.yml; Vercel's own cron on this project
@@ -15,6 +15,6 @@ export async function GET(request: Request) {
   const { CRON_SECRET } = cronEnv();
   if (!CRON_SECRET) return Response.json({ error: "CRON_SECRET is not set" }, { status: 503 });
   if (!bearerMatches(request, CRON_SECRET)) return new Response(null, { status: 401 });
-  const result = await runBatchWork(db(), { budgetMs: 100_000 });
+  const result = await runBatchWork(db(), { budgetMs: 270_000 });
   return Response.json(result, { headers: { "Cache-Control": "no-store" } });
 }

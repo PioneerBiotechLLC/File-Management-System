@@ -98,7 +98,7 @@ describe.skipIf(!TEST_DATABASE_URL)("batch reading (database)", () => {
     const damaged = await upload("damaged.pdf", "%PDF-1.7 broken");
     const big = await upload("big.pdf", `%PDF-1.7 ${"x".repeat(1_100_000)}`);
     for (const id of [quote, damaged, big]) await queueForBatch(prisma, await ctx(), id);
-    expect(await batchStatus(prisma, orgId)).toEqual({ waiting: 3, sending: 0, reading: 0, batches: 0, oldestSentAt: null, lastError: null });
+    expect(await batchStatus(prisma, orgId)).toEqual({ waiting: 3, sending: 0, reading: 0, batches: 0, collecting: 0, oldestSentAt: null, lastError: null });
     // A queued file is left to the batch, not read now.
     expect(await intake.readUpload(prisma, await ctx(), company, quote)).toEqual({ status: "busy" });
 

@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { run } from "@/lib/action-result";
-import { runBatchWork } from "@/lib/batch-reading";
+import { batchStatus, runBatchWork } from "@/lib/batch-reading";
 import { settleReview } from "@/lib/bulk";
 import { db } from "@/lib/db";
 import { UserError } from "@/lib/errors";
@@ -33,6 +33,6 @@ export async function checkBatchesAction(slug: string) {
     if (role !== "admin") throw new UserError("Only admins can check batch reading.");
     const result = await runBatchWork(db(), { budgetMs: 90_000, orgId: org.id });
     revalidatePath(`/c/${slug}`, "layout");
-    return result;
+    return { ...result, status: await batchStatus(db(), org.id) };
   });
 }

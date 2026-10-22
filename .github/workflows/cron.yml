@@ -15,10 +15,10 @@ jobs:
       APP_URL: ${{ secrets.APP_URL }}
       CRON_SECRET: ${{ secrets.CRON_SECRET }}
     steps:
-      - name: Check secrets
-        run: |
-          [ -n "$APP_URL" ] || { echo "::error::Repository secret APP_URL is not set"; exit 1; }
-          [ -n "$CRON_SECRET" ] || { echo "::error::Repository secret CRON_SECRET is not set"; exit 1; }
       - name: Batch reading
         run: |
-          curl -sS --fail-with-body --max-time 150 -H "Authorization: Bearer $CRON_SECRET" "${APP_URL%/}/api/cron/batches"
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::warning::Repository secrets APP_URL and CRON_SECRET are not set, so batch reading is only moved along when an admin opens Review. Add them under Settings > Secrets and variables > Actions."
+            exit 0
+          fi
+          curl -sS --fail-with-body --max-time 320 -H "Authorization: Bearer $CRON_SECRET" "${APP_URL%/}/api/cron/batches"
