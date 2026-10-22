@@ -27,6 +27,8 @@ const PDF_MAX_BYTES = 22 * 1024 * 1024;
 const IMAGE_MAX_BYTES = 7 * 1024 * 1024;
 /** Office files are zip archives; unpacking a large one can exhaust a serverless function's memory. */
 const OFFICE_MAX_BYTES = 20 * 1024 * 1024;
+/** Spreadsheets unpack to many times their size in memory while they are parsed; larger ones take the function down with them. */
+const SPREADSHEET_MAX_BYTES = 5 * 1024 * 1024;
 /** What an Office file may unpack to. A real 20 MB document unpacks to a few times that; a zip bomb to gigabytes. */
 const OFFICE_MAX_INFLATED_BYTES = 200 * 1024 * 1024;
 const OFFICE_MAX_ENTRIES = 10_000;
@@ -324,6 +326,7 @@ export async function extract(bytes: Uint8Array, name: string, mimeType: string)
       }
     }
     case "spreadsheet": {
+      if (bytes.length > SPREADSHEET_MAX_BYTES) return unreadable(`Spreadsheet is larger than ${mb(SPREADSHEET_MAX_BYTES)}, the most that can be read`);
       const tooBig = officeTooBig(bytes, "Spreadsheet");
       if (tooBig) return tooBig;
       try {

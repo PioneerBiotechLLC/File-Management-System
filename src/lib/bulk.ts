@@ -69,9 +69,12 @@ export function cannotBeRead(file: { readStatus: string | null; aiError: string 
   return file.aiError !== NOT_SET_UP && file.aiError !== NOT_THE_UPLOAD;
 }
 
-/** Not read because the AI does not read files this large. */
-export function tooLargeForAi(file: { readStatus: string | null; sizeBytes: number }): boolean {
-  return file.readStatus === "not_read" && file.sizeBytes > limitsEnv().FILES_AI_MAX_MB * 1024 * 1024;
+/** Reasons a file was not read that mean "too big", whatever the check that said so (the AI's limit, a parser's, or sending kept dying). */
+export const TOO_BIG_REASON = /larger than|too heavy/i;
+
+/** Not read because the file is too large or too heavy for the AI, not because of what it is. */
+export function tooLargeForAi(file: { readStatus: string | null; sizeBytes: number; aiError?: string | null }): boolean {
+  return file.readStatus === "not_read" && (file.sizeBytes > limitsEnv().FILES_AI_MAX_MB * 1024 * 1024 || TOO_BIG_REASON.test(file.aiError ?? ""));
 }
 
 /** A file too large for the AI goes to General under its own name, marked unsure, for someone to move. */
@@ -166,8 +169,13 @@ export async function autoFileAfterRead(
 function settleWhere(orgId: string) {
   const max = limitsEnv().FILES_AI_MAX_MB * 1024 * 1024;
   const read: Prisma.StoredFileWhereInput = { readStatus: { in: ["full", "partial"] } };
-  const tooLarge: Prisma.StoredFileWhereInput = { readStatus: "not_read", sizeBytes: { gt: max } };
-  const unreadable: Prisma.StoredFileWhereInput = { readStatus: "not_read", sizeBytes: { lte: max }, aiError: { notIn: [NOT_SET_UP, NOT_THE_UPLOAD] } };
+  const tooLarge: Prisma.StoredFileWhereInput = { readStatus: "not_read", OR: [{ sizeBytes: { gt: max } }, { aiError: { contains: "larger than", mode: "insensitive" } }, { aiError: { contains: "too heavy", mode: "insensitive" } }] };
+  const unreadable: Prisma.StoredFileWhereInput = {
+    readStatus: "not_read",
+    sizeBytes: { lte: max },
+    aiError: { notIn: [NOT_SET_UP, NOT_THE_UPLOAD] },
+    NOT: [{ aiError: { contains: "larger than", mode: "insensitive" } }, { aiError: { contains: "too heavy", mode: "insensitive" } }],
+  };
   const failedRead: Prisma.StoredFileWhereInput = { readStatus: null, aiError: { not: null }, attempts: { lt: MAX_READ_ATTEMPTS } };
   const waiting: Prisma.StoredFileWhereInput = { orgId, folderId: null, deletedAt: null, status: "needs_review", summaryConfirmedAt: null };
   return {

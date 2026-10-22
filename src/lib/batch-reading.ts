@@ -36,6 +36,9 @@ const LOAD_LANES = 6;
 const STALE_COLLECTING_MS = 10 * 60 * 1000;
 /** A batch still being put together after this was cut off before Anthropic took it. */
 const STALE_SUBMITTING_MS = 15 * 60 * 1000;
+/** A file whose sending was cut off this many times is too heavy to read (one file can take the whole function down). */
+const MAX_SEND_TRIES = 3;
+export const TOO_HEAVY = "The file is too heavy to read: sending it for batch reading was cut off three times.";
 
 type Company = { name: string; domain: string; timezone: string };
 
@@ -53,6 +56,8 @@ export async function queueForBatch(prisma: Db, ctx: Pick<FileContext, "orgId" |
 
 export type BatchStatus = {
   waiting: number;
+  /** claimed by a batch that is being put together right now */
+  sending: number;
   reading: number;
   batches: number;
   /** When the oldest batch still with the AI was sent (ISO), for "since …" */
@@ -63,14 +68,15 @@ export type BatchStatus = {
 
 /** How many files wait to be sent, how many are with the AI, and how many batches are out. */
 export async function batchStatus(prisma: Db, orgId: string): Promise<BatchStatus> {
-  const [waiting, reading, batches, oldest, failed] = await Promise.all([
+  const [waiting, sending, reading, batches, oldest, failed] = await Promise.all([
     prisma.storedFile.count({ where: waitingToSend(orgId) }),
-    prisma.storedFile.count({ where: { orgId, status: "processing", deletedAt: null, batchQueuedAt: { not: null }, aiBatchId: { not: null } } }),
+    prisma.storedFile.count({ where: { orgId, status: "processing", deletedAt: null, batchQueuedAt: { not: null }, aiBatch: { status: "submitting" } } }),
+    prisma.storedFile.count({ where: { orgId, status: "processing", deletedAt: null, batchQueuedAt: { not: null }, aiBatch: { status: { in: ["in_progress", "collecting"] } } } }),
     prisma.aiBatch.count({ where: { orgId, status: { in: ["in_progress", "collecting"] } } }),
     prisma.aiBatch.findFirst({ where: { orgId, status: { in: ["in_progress", "collecting"] } }, orderBy: { createdAt: "asc" }, select: { createdAt: true } }),
     prisma.aiBatch.findFirst({ where: { orgId, status: "failed", error: { not: null }, createdAt: { gte: new Date(Date.now() - 7 * 24 * 3_600_000) } }, orderBy: { createdAt: "desc" }, select: { error: true } }),
   ]);
-  return { waiting, reading, batches, oldestSentAt: oldest?.createdAt.toISOString() ?? null, lastError: failed?.error ?? null };
+  return { waiting, sending, reading, batches, oldestSentAt: oldest?.createdAt.toISOString() ?? null, lastError: failed?.error ?? null };
 }
 
 const past = (deadlineAt: Date | undefined) => !!deadlineAt && Date.now() >= deadlineAt.getTime();
@@ -104,7 +110,8 @@ export async function submitBatch(prisma: Db, ctx: FileContext, company: Company
   if (ctx.role !== "admin") throw new UserError("Only admins can use batch reading.");
   if (!process.env.ANTHROPIC_API_KEY?.trim() || aiEnv().AI_MAX_CALLS_PER_DAY <= 0) throw new UserError("AI reading is not set up on this server.");
   const model = aiEnv().ANTHROPIC_MODEL;
-  const clear = { batchQueuedAt: null, attempts: { increment: 1 } };
+  // `attempts` counts the times a file was claimed for sending (below), so a file that keeps taking the function down is given up on.
+  const clear = { batchQueuedAt: null };
   let notRead = 0;
   let deleted = 0;
 
@@ -112,15 +119,16 @@ export async function submitBatch(prisma: Db, ctx: FileContext, company: Company
   const maxAiBytes = limitsEnv().FILES_AI_MAX_MB * 1024 * 1024;
   const candidates = await prisma.storedFile.findMany({
     where: waitingToSend(ctx.orgId),
-    select: { id: true, name: true, originalName: true, mimeType: true, sizeBytes: true, currentVersion: true, createdAt: true },
+    select: { id: true, name: true, originalName: true, mimeType: true, sizeBytes: true, currentVersion: true, createdAt: true, attempts: true },
     orderBy: { createdAt: "asc" },
     take: BATCH_MAX_FILES * 3,
   });
   const chosen: typeof candidates = [];
   let bytes = 0;
   for (const file of candidates) {
-    if (file.sizeBytes > maxAiBytes) {
-      await recordNotRead(prisma, ctx, file, `The file is larger than ${limitsEnv().FILES_AI_MAX_MB} MB, the most the AI reads.`, false, clear);
+    const unread = file.sizeBytes > maxAiBytes ? `The file is larger than ${limitsEnv().FILES_AI_MAX_MB} MB, the most the AI reads.` : file.attempts >= MAX_SEND_TRIES ? TOO_HEAVY : null;
+    if (unread) {
+      await recordNotRead(prisma, ctx, file, unread, false, clear);
       if ((await settleUnread(prisma, ctx, company, file.id)) === "deleted") deleted += 1;
       notRead += 1;
       continue;
@@ -133,7 +141,7 @@ export async function submitBatch(prisma: Db, ctx: FileContext, company: Company
 
   // Claim the files for this batch, so a second sender (the cron, another tab) cannot send them too.
   const batch = await prisma.aiBatch.create({ data: { orgId: ctx.orgId, model, createdBy: ctx.userId }, select: { id: true } });
-  await prisma.storedFile.updateMany({ where: { ...waitingToSend(ctx.orgId), id: { in: chosen.map((f) => f.id) } }, data: { aiBatchId: batch.id } });
+  await prisma.storedFile.updateMany({ where: { ...waitingToSend(ctx.orgId), id: { in: chosen.map((f) => f.id) } }, data: { aiBatchId: batch.id, attempts: { increment: 1 } } });
   const mine = new Set((await prisma.storedFile.findMany({ where: { aiBatchId: batch.id, status: "processing" }, select: { id: true } })).map((f) => f.id));
 
   const [parties, materials] = await Promise.all([listParties(prisma, ctx.orgId), listMaterials(prisma, ctx.orgId)]);
@@ -256,7 +264,7 @@ export async function collectBatches(prisma: Db, opts: { orgId?: string; limit?:
     ]);
     const [parties, materials] = await Promise.all([listParties(prisma, batch.orgId), listMaterials(prisma, batch.orgId)]);
     const choices = { folders: folderChoices(ctx), parties: partyChoices(parties), materials: materialChoices(materials) };
-    const clear = { batchQueuedAt: null, attempts: { increment: 1 } };
+    const clear = { batchQueuedAt: null };
 
     for await (const entry of await anthropic().beta.messages.batches.results(batch.anthropicId!)) {
       if (past(opts.deadlineAt)) {

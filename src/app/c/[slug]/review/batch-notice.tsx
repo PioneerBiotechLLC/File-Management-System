@@ -13,7 +13,7 @@ export function BatchNotice({ slug, status }: { slug: string; status: BatchStatu
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  if (status.waiting + status.reading === 0 && !status.lastError) return null;
+  if (status.waiting + status.sending + status.reading === 0 && !status.lastError) return null;
 
   const check = async () => {
     setBusy(true);
@@ -27,6 +27,7 @@ export function BatchNotice({ slug, status }: { slug: string; status: BatchStatu
         sent > 0 ? `${sent} sent to the AI` : null,
         collected.finished > 0 ? `${collected.finished} finished ${collected.finished === 1 ? "batch" : "batches"} taken in: ${collected.filed} filed, ${collected.review} for review${collected.deleted ? `, ${collected.deleted} deleted` : ""}` : null,
         collected.checked > 0 && collected.finished === 0 ? "the AI is still reading" : null,
+        sent === 0 && collected.checked === 0 && status.sending > 0 ? "a batch is being sent right now; check again in a minute" : null,
         collected.partial ? "more to take in; press again" : null,
       ].filter(Boolean);
       setMessage(parts.length ? `${parts.join("; ")}.` : "Nothing to do right now.");
@@ -45,7 +46,7 @@ export function BatchNotice({ slug, status }: { slug: string; status: BatchStatu
         Batch reading
       </div>
       <p>
-        <strong>{status.waiting.toLocaleString("en")}</strong> waiting to be sent · <strong>{status.reading.toLocaleString("en")}</strong> with the AI{since && <> (since {since})</>}.
+        <strong>{status.waiting.toLocaleString("en")}</strong> waiting to be sent{status.sending > 0 && <> · <strong>{status.sending.toLocaleString("en")}</strong> being sent now</>} · <strong>{status.reading.toLocaleString("en")}</strong> with the AI{since && <> (since {since})</>}.
         Moved along on its own every 15 minutes and whenever an admin opens this page.
       </p>
       {status.lastError && (

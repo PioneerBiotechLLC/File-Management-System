@@ -98,7 +98,7 @@ describe.skipIf(!TEST_DATABASE_URL)("batch reading (database)", () => {
     const damaged = await upload("damaged.pdf", "%PDF-1.7 broken");
     const big = await upload("big.pdf", `%PDF-1.7 ${"x".repeat(1_100_000)}`);
     for (const id of [quote, damaged, big]) await queueForBatch(prisma, await ctx(), id);
-    expect(await batchStatus(prisma, orgId)).toEqual({ waiting: 3, reading: 0, batches: 0, oldestSentAt: null, lastError: null });
+    expect(await batchStatus(prisma, orgId)).toEqual({ waiting: 3, sending: 0, reading: 0, batches: 0, oldestSentAt: null, lastError: null });
     // A queued file is left to the batch, not read now.
     expect(await intake.readUpload(prisma, await ctx(), company, quote)).toEqual({ status: "busy" });
 
@@ -113,7 +113,9 @@ describe.skipIf(!TEST_DATABASE_URL)("batch reading (database)", () => {
     expect(await row(big)).toMatchObject({ status: "ready", readStatus: "not_read", batchQueuedAt: null, unsure: true, title: "big.pdf", aiError: expect.stringContaining("larger than 1 MB") });
     expect(await row(quote)).toMatchObject({ status: "processing", aiBatchId: expect.any(String) });
     expect(await prisma.aiBatch.findFirstOrThrow({ where: { orgId } })).toMatchObject({ anthropicId: "msgbatch_1", status: "in_progress", fileCount: 2 });
-    expect(await batchStatus(prisma, orgId)).toMatchObject({ waiting: 0, reading: 2, batches: 1, oldestSentAt: expect.any(String), lastError: null });
+    expect(await batchStatus(prisma, orgId)).toMatchObject({ waiting: 0, sending: 0, reading: 2, batches: 1, oldestSentAt: expect.any(String), lastError: null });
+    // Each file was claimed once; a file whose sending keeps dying is given up on after three claims.
+    expect(await row(quote)).toMatchObject({ attempts: 1 });
   });
 
   it("only checks a batch that is still running, then stores and files its results at half price", async () => {
@@ -153,6 +155,14 @@ describe.skipIf(!TEST_DATABASE_URL)("batch reading (database)", () => {
     // Nothing is stored twice.
     expect(await collectBatches(prisma, { orgId })).toMatchObject({ checked: 0, finished: 0 });
     expect(await prisma.aiUsage.count({ where: { fileId: quote } })).toBe(1);
+  });
+
+  it("gives up on a file whose sending was cut off three times: General, under its own name", async () => {
+    const heavy = await upload("heavy.xlsx", "%PDF-1.7 pretend heavy");
+    await queueForBatch(prisma, await ctx(), heavy);
+    await prisma.storedFile.update({ where: { id: heavy }, data: { attempts: 3 } });
+    expect(await submitBatch(prisma, await ctx(), company)).toMatchObject({ sent: 0, notRead: 1, deleted: 0 });
+    expect(await row(heavy)).toMatchObject({ status: "ready", readStatus: "not_read", unsure: true, title: "heavy.xlsx", aiError: expect.stringContaining("too heavy") });
   });
 
   it("puts files from a send that was cut off back in line", async () => {
