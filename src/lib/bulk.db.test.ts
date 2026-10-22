@@ -136,21 +136,23 @@ describe.skipIf(!TEST_DATABASE_URL)("bulk upload: filing without confirmation (d
     expect(await fileRow(fileId)).toMatchObject({ deletedAt: null, status: "needs_review" });
   });
 
-  it("keeps a file too large for the AI, or whose read failed, in Review", async () => {
+  it("files a file too large for the AI in General under its own name, and keeps a failed read in Review", async () => {
     vi.stubEnv("FILES_AI_MAX_MB", "1");
     const big = await upload("big.pdf");
     await prisma.storedFile.update({ where: { id: big }, data: { status: "needs_review", readStatus: "not_read", sizeBytes: 2 * 1024 * 1024, aiError: "The file is larger than 1 MB, the most the AI reads." } });
-    expect(await autoFileAfterRead(prisma, await ctx(), company, big)).toMatchObject({ action: "review" });
+    expect(await autoFileAfterRead(prisma, await ctx(), company, big)).toMatchObject({ action: "filed", path: "General", confidence: 0, unsure: true });
+    expect(await fileRow(big)).toMatchObject({ folderId: folder.General, status: "ready", unsure: true, title: "big.pdf", summary: expect.stringContaining("larger than 1 MB") });
+    expect(await prisma.auditLog.findFirst({ where: { targetId: big, action: "file.summary" } })).toMatchObject({ after: { source: "name", auto: true } });
 
     const failed = await upload("failed.pdf");
     analyzeFile.mockRejectedValueOnce(new Error("overloaded"));
     expect(await intake.readUpload(prisma, await ctx(), company, failed)).toMatchObject({ status: "not_read", retryable: true });
     expect(await autoFileAfterRead(prisma, await ctx(), company, failed)).toMatchObject({ action: "review" });
-    expect(await prisma.storedFile.count({ where: { id: { in: [big, failed] }, deletedAt: null } })).toBe(2);
-    await prisma.storedFile.updateMany({ where: { id: { in: [big, failed] } }, data: { deletedAt: new Date() } });
+    expect(await fileRow(failed)).toMatchObject({ folderId: null, deletedAt: null });
+    await prisma.storedFile.update({ where: { id: failed }, data: { deletedAt: new Date() } });
   });
 
-  it("clears Review in steps: files what was read, deletes what cannot be read, keeps the rest", async () => {
+  it("clears Review in steps: files what was read or is too large, deletes what cannot be read, retries a failed read, keeps the rest", async () => {
     vi.stubEnv("FILES_AI_MAX_MB", "1");
     // What earlier runs left in Review.
     await prisma.storedFile.updateMany({ where: { orgId, folderId: null, deletedAt: null }, data: { deletedAt: new Date() } });
@@ -159,24 +161,38 @@ describe.skipIf(!TEST_DATABASE_URL)("bulk upload: filing without confirmation (d
     const unreadable = await uploadUnreadable("blank.pdf");
     const big = await upload("huge.pdf");
     await prisma.storedFile.update({ where: { id: big }, data: { status: "needs_review", readStatus: "not_read", sizeBytes: 2 * 1024 * 1024, aiError: "Too large" } });
+    // A read that failed earlier works this time.
+    const failed = await upload("failed-once.pdf");
+    analyzeFile.mockRejectedValueOnce(new Error("overloaded"));
+    expect(await intake.readUpload(prisma, await ctx(), company, failed)).toMatchObject({ status: "not_read", retryable: true });
     // Someone has started on this one; it is theirs to finish.
     const started = await uploadAndRead("started.pdf", folderFiling(folder["Sales/Quotations"]!, 0.3));
     await prisma.storedFile.update({ where: { id: started }, data: { summaryConfirmedAt: new Date() } });
 
-    expect(await reviewToSettle(prisma, orgId)).toEqual({ toFile: 2, toDelete: 1 });
+    expect(await reviewToSettle(prisma, orgId)).toEqual({ toFile: 3, toDelete: 1, toRetry: 1 });
+    analyzeFile.mockResolvedValueOnce({
+      status: "analyzed",
+      readStatus: "full",
+      model: "m",
+      analysis: { readable: true, problem: null, title: "Second time", summary: "A document.", docType: "other", docDate: null, language: "en", facts: { parties: [], references: [], amounts: [], products: [] }, tags: [], filing: folderFiling(folder["Sales/Quotations"]!, 0.9) },
+    });
+    // Out of time at once: nothing is done, and the next call starts from the beginning.
+    expect(await settleReview(prisma, await ctx(), company, { limit: 2, deadlineAt: new Date(Date.now() - 1) })).toEqual({ filed: 0, unsure: 0, deleted: 0, kept: 0, next: "" });
     const first = await settleReview(prisma, await ctx(), company, { limit: 2 });
     expect(first.next).not.toBeNull();
     const second = await settleReview(prisma, await ctx(), company, { after: first.next, limit: 2 });
-    expect(second.next).toBeNull();
-    const sum = (k: "filed" | "unsure" | "deleted" | "kept") => first[k] + second[k];
-    expect([sum("filed"), sum("unsure"), sum("deleted"), sum("kept")]).toEqual([1, 1, 1, 0]);
+    const third = second.next === null ? { filed: 0, unsure: 0, deleted: 0, kept: 0, next: null } : await settleReview(prisma, await ctx(), company, { after: second.next, limit: 2 });
+    expect(third.next).toBeNull();
+    const sum = (k: "filed" | "unsure" | "deleted" | "kept") => first[k] + second[k] + third[k];
+    expect([sum("filed"), sum("unsure"), sum("deleted"), sum("kept")]).toEqual([2, 2, 1, 0]);
 
     expect(await fileRow(sure)).toMatchObject({ folderId: folder["Sales/Quotations"], unsure: false });
     expect(await fileRow(unsure)).toMatchObject({ folderId: folder.General, unsure: true });
     expect(await fileRow(unreadable)).toMatchObject({ deletedAt: expect.any(Date) });
-    expect(await fileRow(big)).toMatchObject({ folderId: null, deletedAt: null });
+    expect(await fileRow(big)).toMatchObject({ folderId: folder.General, unsure: true, title: "huge.pdf" });
+    expect(await fileRow(failed)).toMatchObject({ folderId: folder["Sales/Quotations"], title: "Second time", status: "ready" });
     expect(await fileRow(started)).toMatchObject({ folderId: null, deletedAt: null });
-    expect(await reviewToSettle(prisma, orgId)).toEqual({ toFile: 0, toDelete: 0 });
+    expect(await reviewToSettle(prisma, orgId)).toEqual({ toFile: 0, toDelete: 0, toRetry: 0 });
   });
 
   it("puts a file with no place in the tree in General, marked unsure, until someone moves it", async () => {

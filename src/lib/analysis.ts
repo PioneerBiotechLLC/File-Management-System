@@ -233,6 +233,24 @@ export const filingInput = z.object({
   reason: z.string().transform(clip(300)),
 });
 
+/**
+ * Claude now and then returns the filing as a JSON string, as prose, or not at all. None of that
+ * should fail the whole read: a string that is JSON is used; anything else means "no filing".
+ */
+const filingLenient = z.preprocess((value) => {
+  if (value && typeof value === "object") return value;
+  if (typeof value === "string") {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch {
+      /* prose, not JSON */
+    }
+  }
+  const reason = typeof value === "string" && value.trim() ? value.trim() : "The AI gave no filing";
+  return { placement: "folder", side: null, partyId: null, partyName: null, materialId: null, materialName: null, docKind: null, folderId: null, confidence: 0, reason };
+}, filingInput);
+
 /** Validates the tool input. Unknown enum values fall back instead of failing; a wrong shape fails. */
 const analysisInput = z.object({
   readable: z.boolean(),
@@ -244,7 +262,7 @@ const analysisInput = z.object({
   language: z.string().transform((v) => (LANGUAGES as readonly string[]).includes(v) ? (v as (typeof LANGUAGES)[number]) : "other"),
   facts: factsInput,
   tags: tagList,
-  filing: filingInput,
+  filing: filingLenient,
 });
 
 /** The facts as stored on the file: { parties, references, amounts, products, items, expiryDate? }. */

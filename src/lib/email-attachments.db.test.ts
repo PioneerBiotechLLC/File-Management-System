@@ -125,6 +125,28 @@ describe.skipIf(!TEST_DATABASE_URL)("email attachments from the tracker (databas
     expect(row).toMatchObject({ status: "ready", folderId: folder.General, unsure: true });
   });
 
+  it("after its own file, reads the attachments confirmed while it was busy", async () => {
+    const ids: string[] = [];
+    for (const [name, content] of [["DN-1.pdf", "delivery note one"], ["DN-2.pdf", "delivery note two"]] as const) {
+      const started = await ea.startEmailAttachment(prisma, { company: "api-pharma", file: { name, mimeType: "application/pdf", size: content.length, sha256: sha(content) }, email: email({ messageId: `<${name}@gulf.ae>` }) });
+      if (started.kind !== "upload") throw new Error("expected an upload");
+      stored.set(`${orgId}/${started.fileId}/1.upload`, new TextEncoder().encode(content));
+      await ea.confirmEmailAttachment(prisma, { company: "api-pharma", fileId: started.fileId, versionNo: 1 });
+      ids.push(started.fileId);
+    }
+    for (const title of ["DN-1", "DN-2"]) {
+      analyzeFile.mockResolvedValueOnce({
+        status: "analyzed", readStatus: "full", model: "m",
+        analysis: { readable: true, problem: null, title, summary: "A delivery note.", docType: "other", docDate: null, language: "en", facts: { parties: [], references: [], amounts: [], products: [] }, tags: [], filing: filing(folder["Logistics/Delivery Notes"]!, 0.9) },
+      });
+    }
+    const outcome = await ea.processEmailAttachment(prisma, { id: orgId, slug: "api-pharma", ...company }, ids[0]!);
+    expect(outcome.filing).toMatchObject({ action: "filed", path: "Logistics / Delivery Notes" });
+    expect(await prisma.storedFile.findMany({ where: { id: { in: ids } }, select: { status: true, title: true }, orderBy: { title: "asc" } })).toEqual([{ status: "ready", title: "DN-1" }, { status: "ready", title: "DN-2" }]);
+    const system = await prisma.appUser.findUniqueOrThrow({ where: { email: "email-tracker@api-pharma.net" } });
+    expect(await ea.nextWaiting(prisma, { orgId, userId: system.id })).toBeNull();
+  });
+
   it("confirming a file that is not an email attachment, or twice, is refused or harmless", async () => {
     await expect(ea.confirmEmailAttachment(prisma, { company: "api-pharma", fileId: "nope", versionNo: 1 })).rejects.toBeInstanceOf(UserError);
     const file = await prisma.storedFile.findFirstOrThrow({ where: { orgId, sourceRef: "email:<scan@x>" } });

@@ -11,9 +11,10 @@ type Totals = { filed: number; unsure: number; deleted: number; kept: number };
 
 /**
  * For admins: files everything in Review the way bulk upload does. Read files go where the AI
- * chose when it was sure, otherwise to General marked unsure; files it cannot read are deleted.
+ * chose when it was sure, otherwise to General marked unsure; files too large for the AI go to
+ * General by name; files it cannot read are deleted; failed reads are tried once more.
  */
-export function SettleReview({ slug, toFile, toDelete }: { slug: string; toFile: number; toDelete: number }) {
+export function SettleReview({ slug, toFile, toDelete, toRetry }: { slug: string; toFile: number; toDelete: number; toRetry: number }) {
   const router = useRouter();
   const [asking, setAsking] = useState(false);
   const [running, setRunning] = useState(false);
@@ -34,7 +35,7 @@ export function SettleReview({ slug, toFile, toDelete }: { slug: string; toFile:
         for (const key of ["filed", "unsure", "deleted", "kept"] as const) sum[key] += out.data[key];
         setTotals({ ...sum });
         after = out.data.next;
-      } while (after);
+      } while (after !== null);
     } catch {
       setError("The connection dropped. Press the button again to carry on; files already done stay done.");
     } finally {
@@ -43,34 +44,36 @@ export function SettleReview({ slug, toFile, toDelete }: { slug: string; toFile:
     }
   };
 
-  if (toFile + toDelete === 0 && !totals) return null;
+  const total = toFile + toDelete + toRetry;
+  if (total === 0 && !totals) return null;
 
   return (
     <div className="bg-card grid gap-3 rounded-xl border p-4 text-sm">
       {!asking && !running && (
         <div className="flex flex-wrap items-center gap-3">
-          <Button size="sm" onClick={() => setAsking(true)} disabled={toFile + toDelete === 0}>
+          <Button size="sm" onClick={() => setAsking(true)} disabled={total === 0}>
             <Wand2 />
             File everything automatically
           </Button>
           <span className="text-muted-foreground">
-            {toFile.toLocaleString("en")} read by the AI to file, {toDelete.toLocaleString("en")} it cannot read to delete.
+            {toFile.toLocaleString("en")} to file, {toDelete.toLocaleString("en")} unreadable to delete{toRetry > 0 && <>, {toRetry.toLocaleString("en")} failed {toRetry === 1 ? "read" : "reads"} to try again</>}.
           </span>
         </div>
       )}
       {asking && (
         <div className="grid gap-2">
           <p>
-            <strong>{toFile.toLocaleString("en")}</strong> files the AI read are filed with no one checking: where the AI chose when it was at least 60% sure, otherwise in
-            General, marked unsure. <strong>{toDelete.toLocaleString("en")}</strong> files the AI cannot read are deleted; they can be restored from{" "}
+            <strong>{toFile.toLocaleString("en")}</strong> files are filed with no one checking: where the AI chose when it was at least 60% sure, otherwise in General,
+            marked unsure (files too large for the AI go to General under their own name). <strong>{toDelete.toLocaleString("en")}</strong> files the AI cannot read are
+            deleted; they can be restored from{" "}
             <Link href={`/c/${slug}/trash`} className="underline">
               Deleted
             </Link>{" "}
-            for 30 days. Files too large for the AI, files still being read and reads that failed stay here.
+            for 30 days.{toRetry > 0 && <> <strong>{toRetry.toLocaleString("en")}</strong> failed {toRetry === 1 ? "read is" : "reads are"} tried once more with the AI first, which takes a while.</>} Files still being read, and files someone has started confirming, stay here.
           </p>
           <div className="flex gap-2">
             <Button size="sm" onClick={() => void start()}>
-              File {toFile.toLocaleString("en")} and delete {toDelete.toLocaleString("en")}
+              File {toFile.toLocaleString("en")}, delete {toDelete.toLocaleString("en")}{toRetry > 0 && <>, retry {toRetry.toLocaleString("en")}</>}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setAsking(false)}>
               Cancel

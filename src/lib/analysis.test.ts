@@ -138,6 +138,13 @@ describe("parseAnalysis", () => {
     expect(parseAnalysis(validInput({ filing: inFolder("sops") }), allowed).filing).toEqual(inFolder("sops"));
   });
 
+  it("takes a filing sent as a JSON string, and treats prose or nothing as no filing", () => {
+    expect(parseAnalysis(validInput({ filing: JSON.stringify(inFolder("sops")) }), allowed).filing).toEqual(inFolder("sops"));
+    const prose = parseAnalysis(validInput({ filing: "Probably a policy document; not sure where it goes." }), allowed).filing;
+    expect(prose).toMatchObject({ placement: "folder", folderId: null, confidence: 0, reason: "Probably a policy document; not sure where it goes." });
+    expect(parseAnalysis(validInput({ filing: null }), allowed).filing).toMatchObject({ folderId: null, confidence: 0, reason: "The AI gave no filing" });
+  });
+
   it("keeps a new customer by name, and drops a known party on the wrong side", () => {
     const fresh = parseAnalysis(validInput({ filing: trading({ partyId: null, partyName: "  Noor  Trading " }) }), allowed).filing;
     expect(fresh).toMatchObject({ placement: "trading", partyId: null, partyName: "Noor Trading" });

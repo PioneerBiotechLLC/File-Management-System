@@ -5,7 +5,7 @@ import { UserError } from "@/lib/errors";
 import { deleteFile, fileContext, type FileContext } from "@/lib/files";
 import type { Destination, FilingSuggestion } from "@/lib/file-kinds";
 import { generalFolderId } from "@/lib/folders";
-import { NOT_SET_UP, NOT_THE_UPLOAD } from "@/lib/intake";
+import { MAX_READ_ATTEMPTS, NOT_SET_UP, NOT_THE_UPLOAD, readUpload, retryRead } from "@/lib/intake";
 import { fileTo, yearChoice, listMaterials, listParties, suggestionFor } from "@/lib/parties";
 import { reindexFile } from "@/lib/search-index";
 
@@ -14,8 +14,8 @@ import { reindexFile } from "@/lib/search-index";
  * confirming. A file the AI is at least AUTO_FILE_THRESHOLD sure about goes where it chose; one it
  * is less sure about, or that has no place in the tree, goes to General, marked unsure. A file the
  * AI cannot read at all (damaged, empty, a kind it cannot open) is deleted, and can be restored
- * from Deleted for 30 days. Only a file too large for the AI, or one that failed for a
- * reason that may pass, waits in Review.
+ * from Deleted for 30 days. A file too large for the AI goes to General under its own name,
+ * marked unsure. Only a read that failed for a reason that may pass waits in Review.
  */
 
 export const AUTO_FILE_THRESHOLD = 0.6;
@@ -65,9 +65,31 @@ export async function fileByAi(prisma: Db, ctx: FileContext, input: { fileId: st
  * not read for a reason on this side.
  */
 export function cannotBeRead(file: { readStatus: string | null; aiError: string | null; sizeBytes: number }): boolean {
-  if (file.readStatus !== "not_read") return false;
-  if (file.sizeBytes > limitsEnv().FILES_AI_MAX_MB * 1024 * 1024) return false;
+  if (file.readStatus !== "not_read" || tooLargeForAi(file)) return false;
   return file.aiError !== NOT_SET_UP && file.aiError !== NOT_THE_UPLOAD;
+}
+
+/** Not read because the AI does not read files this large. */
+export function tooLargeForAi(file: { readStatus: string | null; sizeBytes: number }): boolean {
+  return file.readStatus === "not_read" && file.sizeBytes > limitsEnv().FILES_AI_MAX_MB * 1024 * 1024;
+}
+
+/** A file too large for the AI goes to General under its own name, marked unsure, for someone to move. */
+async function fileByName(prisma: Db, ctx: FileContext, file: { id: string; name: string }, reason: string): Promise<BulkOutcome> {
+  const general = generalFolderId(ctx.folders, ctx.writable);
+  if (!general) return { action: "review", reason: `${reason} There is no General folder to put it in.` };
+  await prisma.$transaction([
+    prisma.storedFile.update({
+      where: { id: file.id },
+      data: { title: file.name, summary: `${reason} Filed in General under its name; move it where it belongs.`, summaryConfirmedAt: new Date(), summaryConfirmedBy: ctx.email, processingStartedAt: null },
+    }),
+    prisma.auditLog.create({
+      data: { orgId: ctx.orgId, userEmail: ctx.email, action: "file.summary", targetType: "file", targetId: file.id, after: { name: file.name, source: "name", edited: false, auto: true } },
+    }),
+  ]);
+  await reindexFile(prisma, file.id);
+  const unsure = await fileByAi(prisma, ctx, { fileId: file.id, destination: { kind: "folder", folderId: general } });
+  return { action: "filed", path: ctx.paths.get(general) ?? "General", confidence: 0, newParty: null, unsure };
 }
 
 export async function autoFileAfterRead(
@@ -99,6 +121,7 @@ export async function autoFileAfterRead(
   if (file.status !== "needs_review" || file.summaryConfirmedAt) throw new UserError("That file is not waiting to be filed.");
   if (file.readStatus !== "full" && file.readStatus !== "partial") {
     const reason = file.aiError ? `The AI could not read it: ${file.aiError}` : "The AI did not read it.";
+    if (tooLargeForAi(file)) return fileByName(prisma, ctx, file, reason);
     if (!cannotBeRead(file)) return { action: "review", reason };
     await deleteFile(prisma, ctx, { fileId: file.id });
     return { action: "deleted", reason };
@@ -135,52 +158,84 @@ export async function autoFileAfterRead(
 }
 
 /**
- * Review files that clearing Review settles: the ones the AI read, which are filed, and the ones it
- * cannot read, which are deleted. A file a person has started confirming stays, as do files still
- * being read, too large for the AI, or whose read failed for a reason that may pass.
+ * Review files that clearing Review settles: the ones the AI read, which are filed; the ones too
+ * large for it, which go to General by name; the ones it cannot read, which are deleted; and the
+ * reads that failed, which are tried once more. A file a person has started confirming stays, as
+ * do files still being read.
  */
 function settleWhere(orgId: string) {
+  const max = limitsEnv().FILES_AI_MAX_MB * 1024 * 1024;
   const read: Prisma.StoredFileWhereInput = { readStatus: { in: ["full", "partial"] } };
-  const unreadable: Prisma.StoredFileWhereInput = {
-    readStatus: "not_read",
-    sizeBytes: { lte: limitsEnv().FILES_AI_MAX_MB * 1024 * 1024 },
-    aiError: { notIn: [NOT_SET_UP, NOT_THE_UPLOAD] },
-  };
+  const tooLarge: Prisma.StoredFileWhereInput = { readStatus: "not_read", sizeBytes: { gt: max } };
+  const unreadable: Prisma.StoredFileWhereInput = { readStatus: "not_read", sizeBytes: { lte: max }, aiError: { notIn: [NOT_SET_UP, NOT_THE_UPLOAD] } };
+  const failedRead: Prisma.StoredFileWhereInput = { readStatus: null, aiError: { not: null }, attempts: { lt: MAX_READ_ATTEMPTS } };
   const waiting: Prisma.StoredFileWhereInput = { orgId, folderId: null, deletedAt: null, status: "needs_review", summaryConfirmedAt: null };
-  return { read: { ...waiting, ...read }, unreadable: { ...waiting, ...unreadable }, either: { ...waiting, OR: [read, unreadable] } };
+  return {
+    toFile: { ...waiting, OR: [read, tooLarge] },
+    toDelete: { ...waiting, ...unreadable },
+    toRetry: { ...waiting, ...failedRead },
+    either: { ...waiting, OR: [read, tooLarge, unreadable, failedRead] },
+  };
 }
 
-export async function reviewToSettle(prisma: Db, orgId: string): Promise<{ toFile: number; toDelete: number }> {
+export async function reviewToSettle(prisma: Db, orgId: string): Promise<{ toFile: number; toDelete: number; toRetry: number }> {
   const where = settleWhere(orgId);
-  const [toFile, toDelete] = await Promise.all([prisma.storedFile.count({ where: where.read }), prisma.storedFile.count({ where: where.unreadable })]);
-  return { toFile, toDelete };
+  const [toFile, toDelete, toRetry] = await Promise.all([
+    prisma.storedFile.count({ where: where.toFile }),
+    prisma.storedFile.count({ where: where.toDelete }),
+    prisma.storedFile.count({ where: where.toRetry }),
+  ]);
+  return { toFile, toDelete, toRetry };
 }
 
 export type SettleResult = { filed: number; unsure: number; deleted: number; kept: number; next: string | null };
 
 /**
  * Clears Review the way bulk upload files, a few files per call: `next` is where the following
- * call starts, null when there is nothing after this one.
+ * call starts ("" when nothing was done yet), null when there is nothing after this one. A failed
+ * read is tried once more first, which takes the AI a while, so a call also stops at the deadline.
  */
-export async function settleReview(prisma: Db, ctx: FileContext, company: { timezone: string }, opts: { after?: string | null; limit: number }): Promise<SettleResult> {
+export async function settleReview(
+  prisma: Db,
+  ctx: FileContext,
+  company: { name: string; domain: string; timezone: string },
+  opts: { after?: string | null; limit: number; deadlineAt?: Date },
+): Promise<SettleResult> {
   if (ctx.role !== "admin") throw new UserError("Only admins can clear Review.");
   const rows = await prisma.storedFile.findMany({
     where: { ...settleWhere(ctx.orgId).either, ...(opts.after ? { id: { gt: opts.after } } : {}) },
-    select: { id: true },
+    select: { id: true, readStatus: true, aiError: true },
     orderBy: { id: "asc" },
     take: opts.limit,
   });
   const out: SettleResult = { filed: 0, unsure: 0, deleted: 0, kept: 0, next: rows.length === opts.limit ? rows.at(-1)!.id : null };
-  for (const { id } of rows) {
+  let done: string | null = null;
+  for (const row of rows) {
+    if (opts.deadlineAt && Date.now() >= opts.deadlineAt.getTime()) {
+      out.next = done ?? opts.after ?? "";
+      break;
+    }
     // Filing can add a customer, supplier or year folder, which the next file may need.
     const fresh = await fileContext(prisma, ctx);
-    const outcome = await autoFileAfterRead(prisma, fresh, company, id).catch((error: unknown) => {
+    if (row.readStatus === null && row.aiError) {
+      // A read that failed: once more, now. Still busy or failed again → it stays, with "Try again with AI".
+      const read = await retryRead(prisma, fresh, row.id)
+        .then(() => readUpload(prisma, fresh, company, row.id))
+        .catch((error: unknown) => (error instanceof UserError ? ({ status: "busy" } as const) : Promise.reject(error)));
+      if (read.status === "busy" || (read.status === "not_read" && read.retryable)) {
+        out.kept += 1;
+        done = row.id;
+        continue;
+      }
+    }
+    const outcome = await autoFileAfterRead(prisma, await fileContext(prisma, ctx), company, row.id).catch((error: unknown) => {
       if (error instanceof UserError) return { action: "review", reason: error.message } as const;
       throw error;
     });
     if (outcome.action === "filed") out[outcome.unsure ? "unsure" : "filed"] += 1;
     else if (outcome.action === "deleted") out.deleted += 1;
     else out.kept += 1;
+    done = row.id;
   }
   return out;
 }

@@ -112,6 +112,7 @@ const REVIEW_SELECT = {
   filingConfidence: true,
   filingReason: true,
   batchQueuedAt: true,
+  aiBatchId: true,
 } satisfies Prisma.StoredFileSelect;
 
 export type ReviewItem = Prisma.StoredFileGetPayload<{ select: typeof REVIEW_SELECT }>;

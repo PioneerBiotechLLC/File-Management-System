@@ -98,7 +98,7 @@ describe.skipIf(!TEST_DATABASE_URL)("batch reading (database)", () => {
     const damaged = await upload("damaged.pdf", "%PDF-1.7 broken");
     const big = await upload("big.pdf", `%PDF-1.7 ${"x".repeat(1_100_000)}`);
     for (const id of [quote, damaged, big]) await queueForBatch(prisma, await ctx(), id);
-    expect(await batchStatus(prisma, orgId)).toEqual({ waiting: 3, reading: 0, batches: 0 });
+    expect(await batchStatus(prisma, orgId)).toEqual({ waiting: 3, reading: 0, batches: 0, oldestSentAt: null, lastError: null });
     // A queued file is left to the batch, not read now.
     expect(await intake.readUpload(prisma, await ctx(), company, quote)).toEqual({ status: "busy" });
 
@@ -109,10 +109,11 @@ describe.skipIf(!TEST_DATABASE_URL)("batch reading (database)", () => {
     expect(params).toMatchObject({ model: "claude-sonnet-5-5", tool_choice: { type: "auto" } });
     expect(params).not.toHaveProperty("fallbacks");
 
-    expect(await row(big)).toMatchObject({ status: "needs_review", readStatus: "not_read", batchQueuedAt: null, aiError: expect.stringContaining("larger than 1 MB") });
+    // Too large for the AI: filed in General under its own name, marked unsure, rather than left for someone to summarise.
+    expect(await row(big)).toMatchObject({ status: "ready", readStatus: "not_read", batchQueuedAt: null, unsure: true, title: "big.pdf", aiError: expect.stringContaining("larger than 1 MB") });
     expect(await row(quote)).toMatchObject({ status: "processing", aiBatchId: expect.any(String) });
     expect(await prisma.aiBatch.findFirstOrThrow({ where: { orgId } })).toMatchObject({ anthropicId: "msgbatch_1", status: "in_progress", fileCount: 2 });
-    expect(await batchStatus(prisma, orgId)).toEqual({ waiting: 0, reading: 2, batches: 1 });
+    expect(await batchStatus(prisma, orgId)).toMatchObject({ waiting: 0, reading: 2, batches: 1, oldestSentAt: expect.any(String), lastError: null });
   });
 
   it("only checks a batch that is still running, then stores and files its results at half price", async () => {
@@ -121,6 +122,10 @@ describe.skipIf(!TEST_DATABASE_URL)("batch reading (database)", () => {
     const idOf = async (name: string) => (await prisma.storedFile.findFirstOrThrow({ where: { orgId, name } })).id;
     const [quote, damaged] = [await idOf("quote.pdf"), await idOf("damaged.pdf")];
     remote.status = "ended";
+    // Out of time before the first result: the batch is handed back untouched, for the next run.
+    remote.results = [{ custom_id: "nothing", result: { type: "errored", error: { type: "error", error: { type: "api_error", message: "x" } } } }];
+    expect(await collectBatches(prisma, { orgId, deadlineAt: new Date(Date.now() - 1) })).toMatchObject({ checked: 0, finished: 0, partial: true });
+    expect(await prisma.aiBatch.findFirstOrThrow({ where: { orgId } })).toMatchObject({ status: "in_progress" });
     remote.results = [
       {
         custom_id: quote,
@@ -137,7 +142,7 @@ describe.skipIf(!TEST_DATABASE_URL)("batch reading (database)", () => {
       { custom_id: damaged, result: { type: "errored", error: { type: "error", error: { type: "invalid_request_error", message: "The PDF is damaged" } } } },
     ];
 
-    expect(await collectBatches(prisma, { orgId })).toEqual({ checked: 1, finished: 1, read: 1, filed: 1, review: 0, deleted: 1 });
+    expect(await collectBatches(prisma, { orgId })).toEqual({ checked: 1, finished: 1, read: 1, filed: 1, review: 0, deleted: 1, partial: false });
     expect(await row(quote)).toMatchObject({ status: "ready", folderId: folder["Sales/Quotations"], title: "Quotation QT-2291", batchQueuedAt: null });
     // Claude could not read it at all, so it is deleted, as in bulk upload.
     expect(await row(damaged)).toMatchObject({ readStatus: "not_read", aiError: "Claude could not read this file: The PDF is damaged", deletedAt: expect.any(Date) });

@@ -1,4 +1,6 @@
 import { notFound } from "next/navigation";
+import { after } from "next/server";
+import { batchStatus, runBatchWork } from "@/lib/batch-reading";
 import { reviewToSettle } from "@/lib/bulk";
 import { db } from "@/lib/db";
 import { fileContext, listUnfiled } from "@/lib/files";
@@ -6,6 +8,7 @@ import { MAX_READ_ATTEMPTS, READ_TIMEOUT_MS, summaryToForm } from "@/lib/intake"
 import { yearChoice, listMaterials, listParties, suggestionFor } from "@/lib/parties";
 import { can } from "@/lib/permissions";
 import { companyContext } from "@/lib/session";
+import { BatchNotice } from "./batch-notice";
 import { ReadingWatch } from "./reading-watch";
 import { ReviewCard, type ReviewFile } from "./review-card";
 import { SettleReview } from "./settle-review";
@@ -20,7 +23,9 @@ export default async function ReviewPage({ params, searchParams }: { params: Pro
   if (!can(role, "review.accept")) notFound();
 
   const ctx = await fileContext(db(), { orgId: org.id, userId: user.id, email: user.email, role });
-  const [waiting, parties, materials] = await Promise.all([listUnfiled(db(), ctx), listParties(db(), org.id), listMaterials(db(), org.id)]);
+  const [waiting, parties, materials, batches] = await Promise.all([listUnfiled(db(), ctx), listParties(db(), org.id), listMaterials(db(), org.id), role === "admin" ? batchStatus(db(), org.id) : null]);
+  // An admin opening this page is as good a moment as any to move batch reading along (after the response, within this route's time).
+  if (batches && batches.waiting + batches.reading > 0) after(() => runBatchWork(db(), { budgetMs: 100_000, orgId: org.id }));
   // Year folders are reached through the customer/supplier choice, not listed here.
   const folders = ctx.folders
     .filter((f) => f.kind === "regular" && f.isActive && ctx.writable.has(f.id))
@@ -34,8 +39,8 @@ export default async function ReviewPage({ params, searchParams }: { params: Pro
   const files: ReviewFile[] = waiting.map((f) => {
     const readByAi = f.readStatus === "full" || f.readStatus === "partial";
     const reading = f.status === "processing" && f.processingStartedAt !== null && now - f.processingStartedAt.getTime() < READ_TIMEOUT_MS;
-    // Left for batch reading: read within 24 hours, then filed or back here.
-    const batch = f.status === "processing" && f.batchQueuedAt !== null;
+    // Left for batch reading: waiting to be sent, or with the AI; then filed or back here.
+    const batch = f.status === "processing" && f.batchQueuedAt !== null ? (f.aiBatchId ? ("sent" as const) : ("waiting" as const)) : null;
     const step = reading || batch ? "reading" : f.summaryConfirmedAt ? "folder" : "summary";
     return {
       id: f.id,
@@ -48,7 +53,7 @@ export default async function ReviewPage({ params, searchParams }: { params: Pro
       batch,
       readByAi,
       aiNote: f.status === "processing" && !reading ? "The AI did not finish reading this file." : (f.aiError ?? null),
-      retryable: !batch && !readByAi && f.attempts < MAX_READ_ATTEMPTS && (f.status === "processing" || (f.readStatus === null && f.aiError !== null)),
+      retryable: batch === null && !readByAi && f.attempts < MAX_READ_ATTEMPTS && (f.status === "processing" || (f.readStatus === null && f.aiError !== null)),
       form: summaryToForm(f),
       suggestion: suggestionFor(
         { folderId: f.suggestedFolderId, trading: f.suggestedTrading, confidence: f.filingConfidence, reason: f.filingReason },
@@ -71,6 +76,7 @@ export default async function ReviewPage({ params, searchParams }: { params: Pro
           {role === "admin" ? " You see everyone's." : " You see your own."}
         </p>
       </div>
+      {batches && <BatchNotice slug={slug} status={batches} />}
       {role === "admin" && <SettleReview slug={slug} {...await reviewToSettle(db(), org.id)} />}
       <ReadingWatch active={files.some((f) => f.step === "reading" && !f.batch)} />
       {files.length === 0 ? (

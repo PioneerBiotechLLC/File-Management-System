@@ -1,6 +1,7 @@
 import { bearerMatches } from "@/lib/api-auth";
-import { collectBatches, submitWaiting } from "@/lib/batch-reading";
+import { runBatchWork } from "@/lib/batch-reading";
 import { db } from "@/lib/db";
+import { readWaitingEmailAttachments } from "@/lib/email-attachments";
 import { cronEnv } from "@/lib/env";
 import { sweep } from "@/lib/sweep";
 
@@ -17,12 +18,14 @@ export async function GET(request: Request) {
   if (!bearerMatches(request, CRON_SECRET)) return new Response(null, { status: 401 });
 
   const result = await sweep(db());
-  // Batch reading left behind (the bulk page was closed): one batch in, one batch out per run.
-  let batches: unknown = null;
+  // Batch reading left behind; /api/cron/batches does the same every 15 minutes.
+  const batches = await runBatchWork(db(), { budgetMs: 40_000 });
+  // Email attachments the tracker confirmed faster than they could be read.
+  let emailAttachments: unknown = null;
   try {
-    batches = { collected: await collectBatches(db(), { limit: 1 }), sent: await submitWaiting(db()) };
+    emailAttachments = { read: await readWaitingEmailAttachments(db(), 60_000) };
   } catch (error) {
-    batches = { error: error instanceof Error ? error.message : String(error) };
+    emailAttachments = { error: error instanceof Error ? error.message : String(error) };
   }
-  return Response.json({ ...result, batches }, { headers: { "Cache-Control": "no-store" } });
+  return Response.json({ ...result, batches, emailAttachments }, { headers: { "Cache-Control": "no-store" } });
 }

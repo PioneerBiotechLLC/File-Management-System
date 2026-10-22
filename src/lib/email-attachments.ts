@@ -4,7 +4,7 @@ import { slugSchema } from "@/lib/companies";
 import type { Db } from "@/lib/db";
 import { UserError } from "@/lib/errors";
 import { confirmUpload, fileContext, startUpload, type FileContext } from "@/lib/files";
-import { readUpload, type ReadOutcome } from "@/lib/intake";
+import { READ_TIMEOUT_MS, readUpload, type ReadOutcome } from "@/lib/intake";
 
 /**
  * Email attachments sent in by the Email Tracker (its `pnpm attachments` job and 15-minute cron).
@@ -130,21 +130,35 @@ export async function confirmEmailAttachment(prisma: Db, input: { company: strin
 
 /** How long the read waits while another of the system user's reads is running (one at a time per person). */
 const BUSY_RETRY_MS = 5_000;
-const BUSY_RETRIES = 12;
+/** Work after a confirm may run this long (the route allows 300 s); attachments confirmed meanwhile are read in that time too. */
+const WORK_BUDGET_MS = 270_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export type ProcessOutcome = { read: ReadOutcome; filing: BulkOutcome | null };
 
 /**
  * After confirm, in the background: the AI reads the file, then it is filed the way bulk uploads
- * are (sure enough → its folder, else General; unreadable → deleted). Never throws: whatever fails leaves the file in Review.
+ * are (sure enough → its folder, else General; unreadable → deleted). The tracker confirms
+ * attachments one after another while reads take up to a minute each, so once its own file is
+ * done this keeps reading the attachments that were confirmed meanwhile, as long as the time
+ * allows. Never throws: whatever fails leaves the file in Review.
  */
-export async function processEmailAttachment(prisma: Db, org: Company, fileId: string): Promise<ProcessOutcome> {
+export async function processEmailAttachment(prisma: Db, org: Company, fileId: string, opts: { budgetMs?: number } = {}): Promise<ProcessOutcome> {
+  const until = Date.now() + (opts.budgetMs ?? WORK_BUDGET_MS);
   const ctx = await systemContext(prisma, org);
+  const own = await readAndFile(prisma, ctx, org, fileId, until);
+  for (let next = await nextWaiting(prisma, ctx); next && Date.now() < until; next = await nextWaiting(prisma, ctx)) {
+    const done = await readAndFile(prisma, ctx, org, next, until);
+    if (done.read.status === "busy") break; // the time ran out while another read held the turn
+  }
+  return own;
+}
+
+async function readAndFile(prisma: Db, ctx: FileContext, org: Company, fileId: string, until: number): Promise<ProcessOutcome> {
   let read: ReadOutcome = { status: "busy" };
-  for (let attempt = 0; attempt < BUSY_RETRIES; attempt++) {
+  for (;;) {
     read = await readUpload(prisma, ctx, org, fileId);
-    if (read.status !== "busy") break;
+    if (read.status !== "busy" || Date.now() + BUSY_RETRY_MS >= until) break;
     await sleep(BUSY_RETRY_MS);
   }
   // A file the AI cannot read goes on too, to be deleted; one whose read failed waits in Review.
@@ -155,4 +169,43 @@ export async function processEmailAttachment(prisma: Db, org: Company, fileId: s
     console.error(`email attachment ${fileId}: filing failed: ${error instanceof Error ? error.message : String(error)}`);
     return { read, filing: null };
   }
+}
+
+/** The oldest email attachment confirmed but not being read: no read under way, or one that died. */
+export async function nextWaiting(prisma: Db, ctx: Pick<FileContext, "orgId" | "userId">): Promise<string | null> {
+  const row = await prisma.storedFile.findFirst({
+    where: {
+      orgId: ctx.orgId,
+      uploadedBy: ctx.userId,
+      source: "email_attachment",
+      status: "processing",
+      deletedAt: null,
+      folderId: null,
+      batchQueuedAt: null,
+      OR: [{ processingStartedAt: null }, { processingStartedAt: { lt: new Date(Date.now() - READ_TIMEOUT_MS) } }],
+    },
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+  return row?.id ?? null;
+}
+
+/**
+ * For the daily cron: reads email attachments left waiting in every company, oldest first, within
+ * the time given. They are left when the tracker confirmed more attachments than the work after
+ * each confirm could read in its time.
+ */
+export async function readWaitingEmailAttachments(prisma: Db, budgetMs: number): Promise<number> {
+  const until = Date.now() + budgetMs;
+  let read = 0;
+  const orgs = await prisma.organization.findMany({ select: { id: true, slug: true, name: true, domain: true, timezone: true } });
+  for (const org of orgs) {
+    const ctx = await systemContext(prisma, org);
+    for (let next = await nextWaiting(prisma, ctx); next && Date.now() < until; next = await nextWaiting(prisma, ctx)) {
+      const done = await readAndFile(prisma, ctx, org, next, until);
+      if (done.read.status === "busy") break;
+      read += 1;
+    }
+  }
+  return read;
 }
