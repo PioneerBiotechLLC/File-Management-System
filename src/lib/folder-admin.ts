@@ -18,10 +18,15 @@ const folderFields = z.object({
 
 type FolderInput = z.input<typeof folderFields>;
 
-type FolderRow = { id: string; parentId: string | null; name: string; access: "everyone" | "restricted"; isActive: boolean };
+type FolderRow = { id: string; parentId: string | null; name: string; access: "everyone" | "restricted"; isActive: boolean; kind: string };
 
 async function orgFolders(prisma: Db, orgId: string): Promise<FolderRow[]> {
-  return prisma.folder.findMany({ where: { orgId }, select: { id: true, parentId: true, name: true, access: true, isActive: true } });
+  return prisma.folder.findMany({ where: { orgId }, select: { id: true, parentId: true, name: true, access: true, isActive: true, kind: true } });
+}
+
+/** Year, customer, supplier and technical folders are created and kept by the app, never edited here. */
+function checkRegular(folder: FolderRow) {
+  if (folder.kind !== "regular") throw new UserError("That folder is managed by the app and cannot be changed from Settings.");
 }
 
 /** The folder and everything under it. */
@@ -51,6 +56,7 @@ function checkParent(folders: FolderRow[], parentId: string | null, movingId?: s
   if (parentId === null) return;
   const parent = folders.find((f) => f.id === parentId);
   if (!parent) throw new UserError("That parent folder does not exist.");
+  if (parent.kind !== "regular") throw new UserError("A folder cannot go inside a year, customer, supplier or technical folder; those are managed by the app.");
   if (movingId && subtreeIds(folders, movingId).has(parentId)) throw new UserError("A folder cannot be moved into itself or one of its subfolders.");
   if (depthOf(folders, parentId) >= MAX_DEPTH) throw new UserError(`Folders can be nested ${MAX_DEPTH} levels deep at most.`);
 }
@@ -88,7 +94,9 @@ export async function createFolder(prisma: Db, actor: Actor, input: FolderInput)
 export async function updateFolder(prisma: Db, actor: Actor, folderId: string, input: FolderInput): Promise<void> {
   const data = parseFolder(input);
   const folders = await orgFolders(prisma, actor.orgId);
-  if (!folders.some((f) => f.id === folderId)) throw new UserError("That folder does not exist.");
+  const folder = folders.find((f) => f.id === folderId);
+  if (!folder) throw new UserError("That folder does not exist.");
+  checkRegular(folder);
   checkParent(folders, data.parentId, folderId);
   checkUnique(folders, data.parentId, data.name, folderId);
   await prisma.$transaction(async (tx) => {
@@ -111,6 +119,7 @@ export async function setFolderActive(prisma: Db, actor: Actor, folderId: string
   const folders = await orgFolders(prisma, actor.orgId);
   const folder = folders.find((f) => f.id === folderId);
   if (!folder) throw new UserError("That folder does not exist.");
+  checkRegular(folder);
   if (active && folder.parentId && !folders.find((f) => f.id === folder.parentId)?.isActive) {
     throw new UserError("Reactivate the parent folder first.");
   }

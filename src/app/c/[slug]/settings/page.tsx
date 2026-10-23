@@ -20,7 +20,7 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
   const [members, rawFolders] = await Promise.all([
     listMembers(prisma, org.id),
     prisma.folder.findMany({
-      where: { orgId: org.id },
+      where: { orgId: org.id, kind: "regular" },
       select: { id: true, parentId: true, name: true, nameAr: true, description: true, access: true, isActive: true, sortOrder: true },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
     }),
